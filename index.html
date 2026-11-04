@@ -9547,7 +9547,7 @@ function rgb(s){
 }
 function hautTuile(t){
   if(t===B.EAU) return -0.42; if(t===B.GUE) return -0.14;
-  if(t===B.ROCHE) return 1.35; return 0;
+  if(t===B.ROCHE) return 1.9; return 0;
 }
 
 /* ---------- terrain ---------- */
@@ -9909,7 +9909,30 @@ function matDecor(tex,emis,vent){
   /* fenêtres : seule la vitre s'allume, pas le cadre ; l'intensité suit la nuit */
   if(tex==='fenetre'){ m.emissiveMap=TEX_OBJ.fenetre; m.emissiveIntensity=0.1; fenetres.push(m); }
   if(vent) avecVent(m,vent);
+  avecDecoupe(m,vent||0);
   return matDecorCache[k]=m;
+}
+/* Découpe : ce qui se dresse entre la caméra et le joueur devient ajouré (un pixel sur
+   deux environ), pour qu'un arbre ou un toit ne le cache jamais. Le sol et les ombres
+   ne sont pas touchés. */
+const uCamP={value:new T3.Vector3()}, uJoueurP={value:new T3.Vector3()};
+function avecDecoupe(m,vent){
+  const avant=m.onBeforeCompile;
+  m.onBeforeCompile=function(sh,r){
+    if(vent&&avant) avant.call(this,sh,r);
+    sh.uniforms.uCamP=uCamP; sh.uniforms.uJoueurP=uJoueurP;
+    sh.vertexShader='varying vec3 vMondeP;\n'+sh.vertexShader.replace('#include <project_vertex>',
+      '#include <project_vertex>\n#ifdef USE_INSTANCING\n vMondeP=(modelMatrix*instanceMatrix*vec4(transformed,1.0)).xyz;\n#else\n vMondeP=(modelMatrix*vec4(transformed,1.0)).xyz;\n#endif');
+    sh.fragmentShader='uniform vec3 uCamP;\nuniform vec3 uJoueurP;\nvarying vec3 vMondeP;\n'+sh.fragmentShader.replace('#include <clipping_planes_fragment>',
+      '#include <clipping_planes_fragment>\n'+
+      '{ vec3 ab=uCamP-uJoueurP; float t=clamp(dot(vMondeP-uJoueurP,ab)/dot(ab,ab),0.0,1.0);\n'+
+      '  float d=length(vMondeP-(uJoueurP+ab*t));\n'+
+      '  if(t>0.02&&vMondeP.y>uJoueurP.y+0.3&&d<1.5){\n'+
+      '    float k=smoothstep(1.5,0.55,d)*smoothstep(0.02,0.12,t);\n'+
+      '    float g=fract(sin(dot(floor(gl_FragCoord.xy),vec2(12.9898,78.233)))*43758.5453);\n'+
+      '    if(g<k*0.82) discard; } }');
+  };
+  m.customProgramCacheKey=function(){ return 'decor'+vent; };
 }
 const matCache={};
 function mat(c,e){
@@ -10104,17 +10127,31 @@ const qq2=new T3.Quaternion(), cTmp=new T3.Color();
 /* pose toutes les pièces d'un modèle. v sert de graine : chaque arbre, chaque
    rocher a sa nuance (un peu plus clair, un peu plus jaune...). teinte remplace
    la couleur de base quand on la donne (l'herbe prend la couleur de son sol). */
+/* Échelle réelle de chaque modèle par rapport à un homme (~0,8 de haut) :
+   une maison fait deux étages d'homme et son toit, un chêne quatre à cinq hommes,
+   une tour de guet sept ou huit. [largeur, hauteur, profondeur] */
+const ECH_MOD={
+  maison:[1,1.55,1], maisonB:[1,1.55,1], tour:[1,1.7,1], donjon:[1,1.7,1], muraille:[1,1.3,1], mur:[1,1.2,1],
+  palis:[1,1.3,1], porte:[1,1.45,1], forge:[1,1.45,1], tente:[1.05,1.25,1.05], banniere:[1,1.45,1], mat:[1,1.35,1],
+  menhir:[1,1.45,1], pilier:[1,1.5,1], ruine:[1,1.3,1],
+  chene:[1.3,1.55,1.3], automne:[1.3,1.55,1.3], bouleau:[1.15,1.6,1.15], pin:[1.2,1.65,1.2], sapinNeige:[1.2,1.6,1.2],
+  saule:[1.25,1.45,1.25], arbreMort:[1.1,1.5,1.1], palmier:[1.1,1.6,1.1],
+  herbe:[0.8,0.8,0.8], hautes:[0.85,0.85,0.85], touffe:[0.85,0.85,0.85],
+  caisses:[0.85,0.85,0.85], foin:[0.9,0.85,0.9], coffre:[0.85,0.85,0.85], chariot:[0.9,0.9,0.9],
+  quintaine:[0.9,0.9,0.9], ratelier:[0.9,0.85,0.9], panneau:[0.9,0.9,0.9]
+};
+const UN=[1,1,1];
 function poserModele(nom,px,pz,h,rot,ech,v,teinte){
-  const pieces=MOD[nom], mm=inst[nom], qp=qPart[nom];
+  const pieces=MOD[nom], mm=inst[nom], qp=qPart[nom], em=ECH_MOD[nom]||UN;
   q.setFromAxisAngle(axeY,rot||0); ech=ech||1;
   const org=ORGA[nom];
   const dl=org?(((v*37)%23)/23-0.5)*0.14:0, dh=org?(((v*53)%17)/17-0.5)*0.05:0, ds=org?(((v*29)%13)/13-0.5)*0.12:0;
   for(let k=0;k<pieces.length;k++){
     const m=mm[k]; if(m.count>=m.userData.cap) continue;
     const p=pieces[k];
-    vp.set(p[2][0]*ech,p[2][1]*ech,p[2][2]*ech).applyQuaternion(q);
+    vp.set(p[2][0]*ech*em[0],p[2][1]*ech*em[1],p[2][2]*ech*em[2]).applyQuaternion(q);
     vp.x+=px; vp.y+=h; vp.z+=pz;
-    vs.set(p[3][0]*ech,p[3][1]*ech,p[3][2]*ech);
+    vs.set(p[3][0]*ech*em[0],p[3][1]*ech*em[1],p[3][2]*ech*em[2]);
     let qq=q;
     if(qp[k]){ qq2.copy(q).multiply(qp[k]); qq=qq2; }
     else if(COUCHE[nom]&&COUCHE[nom][k]){ qq2.copy(q).multiply(qc); qq=qq2; }
@@ -10248,6 +10285,7 @@ for(const k in PEINTRE_PERSO){
   const t=new T3.CanvasTexture(toile(128,236,PEINTRE_PERSO[k],k.length*577+3));
   t.anisotropy=4; TEX_P[k]=t;
 }
+const K_PERSO=0.7;
 const matSacDos=new T3.MeshStandardMaterial({color:0x8a6038,map:TEX_P.cuir,roughness:.9,flatShading:true});
 const matBoucle=new T3.MeshStandardMaterial({color:0xc9a23c,roughness:.4,metalness:.6});
 function mStd(){ return new T3.MeshStandardMaterial({color:0x777777,map:TEX_P.uni,roughness:.85,flatShading:true}); }
@@ -10315,9 +10353,11 @@ function poser(f,e,forme,look,taille,o,dt){
   f.position.set(X,h+(o.alt||0)/TS,Z);
   if(Math.abs(e.fx||0)+Math.abs(e.fy||0)>0.01) f.rotation.y=Math.atan2(e.fx||0,e.fy||0);
   f.rotation.x=0; f.rotation.z=0;
-  f.scale.setScalar(taille);
+  /* échelle humaine : une case fait à peu près deux pas, un homme y tient debout sans la remplir */
+  const tk=taille*K_PERSO;
+  f.scale.setScalar(tk);
   /* le choc d'un coup : la figurine s'écrase un instant */
-  if(o.flash>0) f.scale.set(taille*1.12,taille*0.84,taille*1.12);
+  if(o.flash>0) f.scale.set(tk*1.12,tk*0.84,tk*1.12);
 
   M.corps.color.set(look.corps); M.jambes.color.set(look.jambes||look.corps);
   M.peau.color.set(look.peau||look.corps); M.chef.color.set(look.chef||look.corps);
@@ -10526,7 +10566,7 @@ const bouclier=new T3.Mesh(new T3.CircleGeometry(0.42,24),
   new T3.MeshBasicMaterial({color:0x8fd8ff,transparent:true,opacity:0,depthWrite:false,side:T3.DoubleSide,blending:T3.AdditiveBlending}));
 const anneauB=new T3.Mesh(new T3.RingGeometry(0.4,0.47,28),
   new T3.MeshBasicMaterial({color:0xd8f4ff,transparent:true,opacity:0,depthWrite:false,side:T3.DoubleSide,blending:T3.AdditiveBlending}));
-const pivotB=new T3.Group(); bouclier.position.set(0,.65,.42); anneauB.position.copy(bouclier.position);
+const pivotB=new T3.Group(); bouclier.position.set(0,.47,.34); bouclier.scale.setScalar(0.8); anneauB.scale.setScalar(0.8); anneauB.position.copy(bouclier.position);
 pivotB.add(bouclier); pivotB.add(anneauB); scene.add(pivotB);
 
 /* voile rouge quand le joueur est blessé */
@@ -10570,7 +10610,7 @@ function fumee(e){
       Math.random()<.5?'#6a6e66':'#4a4e48',0.14+Math.random()*0.1,1.2+Math.random()*0.5,-0.3,false);
 }
 function couleurMob(m){ const L=LOOK[m.t]||LOOK.defaut; return L[1].corps; }
-function tailleMob(m){ const d=J.HOSTILES[m.t]||{}; return ((d.r||m.r||10)/10)*(d.taille||1)*(d.boss?1.3:1); }
+function tailleMob(m){ const d=J.HOSTILES[m.t]||{}; return ((d.r||m.r||10)/10)*(d.taille||1)*(d.boss?1.3:1)*K_PERSO; }
 
 let dernS=null;
 function majEffets(S,dt,X,Z,hJ){
@@ -10583,17 +10623,17 @@ function majEffets(S,dt,X,Z,hJ){
     m.__fl=m.flash;
   });
   (S.betes||[]).forEach(function(b){
-    if(b.flash>0&&!(b.__fl>0)) coupRecu(b,'#8a3a2a',(b.r||10)/10);
+    if(b.flash>0&&!(b.__fl>0)) coupRecu(b,'#8a3a2a',(b.r||10)/10*K_PERSO);
     b.__fl=b.flash;
   });
   (S.pnj||[]).forEach(function(p){
-    if(p.flash>0&&!(p.__fl>0)) coupRecu(p,'#8a3a2a',1);
+    if(p.flash>0&&!(p.__fl>0)) coupRecu(p,'#8a3a2a',K_PERSO);
     p.__fl=p.flash;
   });
   /* morts et disparitions */
   prevMobs=suivre(S.mobs||[],prevMobs,function(m){ const d=J.HOSTILES[m.t]||{}; mortCreature(m,couleurMob(m),tailleMob(m),!!d.boss); },fumee);
-  prevBetes=suivre(S.betes||[],prevBetes,function(b){ mortCreature(b,'#8a6a44',(b.r||10)/10,false); },null);
-  prevPnj=suivre(S.pnj||[],prevPnj,function(p){ mortCreature(p,'#5a6f8a',1,false); },null);
+  prevBetes=suivre(S.betes||[],prevBetes,function(b){ mortCreature(b,'#8a6a44',(b.r||10)/10*K_PERSO,false); },null);
+  prevPnj=suivre(S.pnj||[],prevPnj,function(p){ mortCreature(p,'#5a6f8a',K_PERSO,false); },null);
 
   /* le joueur blessé */
   if(vieAvant>=0&&j.vie<vieAvant-0.5){
@@ -10609,7 +10649,7 @@ function majEffets(S,dt,X,Z,hJ){
   /* l'arc de taille */
   const an=j.anim||{};
   const enCoup=an.n&&an.n!=='repos'&&an.n!=='pouvoir'&&an.d>0&&an.t<an.d;
-  pivotArc.position.set(X,hJ+0.55,Z);
+  pivotArc.position.set(X,hJ+0.42,Z);
   pivotArc.rotation.y=Math.atan2(j.fx||0,j.fy||1);
   if(enCoup){
     const pr=Math.min(1,an.t/an.d), sens=((j.combo||0)%2)?-1:1;
@@ -10735,7 +10775,8 @@ function modeleMesh(nom,i){
     if(qPart[nom][k]) me.quaternion.copy(qPart[nom][k]); else if(COUCHE[nom]&&COUCHE[nom][k]) me.quaternion.copy(qc);
     me.castShadow=true; g.add(me);
   });
-  g.rotation.y=rot; g.scale.setScalar(ech); g.userData.mats=mats; g.userData.ech=ech;
+  const em=ECH_MOD[nom]||UN;
+  g.rotation.y=rot; g.scale.set(ech*em[0],ech*em[1],ech*em[2]); g.userData.mats=mats; g.userData.ech=ech*em[1];
   return g;
 }
 function retirerFantome(i){
@@ -11116,7 +11157,7 @@ function majAnims(S,dt,X,Z,hJ){
   if(anim.craft){
     const c=anim.craft; c.t+=dt;
     const k=Math.min(1,c.t/0.3), pop=k<1?easeS(k)*1.25:1.25-Math.min(1,(c.t-0.3)/0.2)*0.25;
-    c.obj.position.set(X,hJ+1.75+Math.min(c.t,1.2)*0.35,Z); c.obj.rotation.y+=dt*4; c.obj.rotation.z=Math.sin(c.t*3)*0.2;
+    c.obj.position.set(X,hJ+1.3+Math.min(c.t,1.2)*0.35,Z); c.obj.rotation.y+=dt*4; c.obj.rotation.z=Math.sin(c.t*3)*0.2;
     c.obj.scale.setScalar(Math.max(0.01,pop*(c.t>1.4?1-(c.t-1.4)/0.2:1)));
     if(Math.random()<0.4) etincelle(X+(Math.random()-.5)*.6,hJ+1.8+Math.random()*0.4,Z+(Math.random()-.5)*.6,0,0.5,0,'#fff2a0',0.04,0.5,0,true);
     if(c.t>=1.6){ gerbe(X,hJ+2.2,Z,18,['#fff2a0','#ffd860','#ffffff'],2.5,0.05,0.6,3,true,0.4); scene.remove(c.obj); anim.craft=null; }
@@ -11359,12 +11400,12 @@ let DENS_MULT=1;
 if(tactileEcran) setTimeout(function(){ appliquerQualite(1); },0);
 
 /* ---------- caméra ---------- */
-let dist=15, distCible=15;
+let dist=12, distCible=12;
 /* orientation : yaw = tour autour du joueur, tang = inclinaison (0.95 ≈ vue plongeante) */
 let yaw=0, yawCible=0, tang=0.95, tangCible=0.95;
 stage.addEventListener('wheel',function(e){
   if(!vue.actif) return;
-  distCible=Math.max(6,Math.min(32,distCible+(e.deltaY>0?1.5:-1.5)));
+  distCible=Math.max(4.5,Math.min(32,distCible+(e.deltaY>0?1.5:-1.5)));
 },{passive:true});
 /* clic droit (ou molette enfoncée) + glisser : tourner la caméra ; clic molette seul : recentrer */
 let orbite=null;
@@ -11531,8 +11572,8 @@ function rendre(dt){
     poser(fig,m,(m.vole||d.vole)?'vol':L[0],L[1],taille,
       {arme:L[2]||null,attaque:-1,alt:m.alt||0,flash:m.flash,pose:poseMob(m)},DT);
     /* figée par le givre : un bloc de glace l'enferme */
-    if(m.gel>0){ const b=bloc3(); b.position.set(fig.position.x,fig.position.y+0.55*taille,fig.position.z);
-      b.rotation.y=fig.rotation.y; b.scale.set(0.8*taille,1.25*taille,0.8*taille); }
+    if(m.gel>0){ const tk=taille*K_PERSO, b=bloc3(); b.position.set(fig.position.x,fig.position.y+0.55*tk,fig.position.z);
+      b.rotation.y=fig.rotation.y; b.scale.set(0.8*tk,1.25*tk,0.8*tk); }
     /* en feu : des flammes lui montent dessus */
     if(m.brule>0&&Math.random()<0.6) etincelle(fig.position.x+(Math.random()-.5)*.4*taille,fig.position.y+0.3+Math.random()*0.6*taille,fig.position.z+(Math.random()-.5)*.4*taille,
       (Math.random()-.5)*.3,1+Math.random(),(Math.random()-.5)*.3,Math.random()<.5?'#ffb040':'#ff6a2a',0.09,0.45,-1,true);
@@ -11616,7 +11657,8 @@ function rendre(dt){
   /* la caméra ne passe pas sous une falaise */
   camY=Math.max(camY,solEn(cx,cz)+1.2);
   cam.position.set(cx+(Math.random()-.5)*sec, camY+(Math.random()-.5)*sec, cz+(Math.random()-.5)*sec*0.5);
-  cam.lookAt(X,hJ+0.6,Z);
+  cam.lookAt(X,hJ+0.4,Z);
+  uCamP.value.copy(cam.position); uJoueurP.value.set(X,hJ,Z);
   majMeteo(S,DT,X,Z,hJ,nn,grotte);
   rend.render(scene,cam);
   majFlots(S);
