@@ -9676,7 +9676,9 @@ const atlas=document.createElement('canvas'); atlas.width=atlas.height=ATLAS;
 const texSol=new T3.CanvasTexture(atlas);
 texSol.anisotropy=rend.capabilities.getMaxAnisotropy();
 texSol.minFilter=T3.LinearMipmapLinearFilter;
-const matSol=new T3.MeshStandardMaterial({vertexColors:true,map:texSol,roughness:0.95,metalness:0,flatShading:true});
+const matSol=new T3.MeshStandardMaterial({vertexColors:true,map:texSol,roughness:0.95,metalness:0});
+/* une montagne entre la caméra et le joueur s'ajoure comme le reste du décor */
+avecDecoupe(matSol,0);
 /* le grain est centré sur un gris moyen : on remonte la couleur pour garder la même clarté */
 const COMP=255/BASE_SOL*1.04;
 function uvCase(t,v,uv,o){
@@ -9701,39 +9703,90 @@ function couleurCase(i,t,coul,ob){
   /* l'ombre douce d'un arbre voisin */
   const x=i%W;
   if((x>0&&ob[i-1]===O.ARBRE)||(x<W-1&&ob[i+1]===O.ARBRE)||(i>=W&&ob[i-W]===O.ARBRE)||(i<W*(H-1)&&ob[i+W]===O.ARBRE)) f*=0.92;
-  return [k[0]*f,k[1]*f,k[2]*f];
+  let r=k[0]*f, g=k[1]*f, b=k[2]*f;
+  /* montagne : la roche s'éclaircit en montant, la neige coiffe les sommets */
+  if(t[i]===B.ROCHE&&hTuile){
+    const h=hTuile[i], cl=Math.max(0,Math.min(1,(h-2.4)/3.5)), ne=Math.max(0,Math.min(1,(h-4.7)/1.1));
+    r+=(0.66-r)*cl*0.55; g+=(0.66-g)*cl*0.55; b+=(0.64-b)*cl*0.55;
+    r+=(1.02-r)*ne; g+=(1.03-g)*ne; b+=(1.06-b)*ne;
+  }
+  return [r,g,b];
+}
+/* Relief : une falaise n'est plus une marche d'escalier, c'est un massif.
+   Plus une case de roche est loin du pied de la montagne, plus elle est haute,
+   et un bruit doux casse les arêtes pour dessiner des crêtes et des pics. */
+let hTuile=null;
+function bruitRelief(x,y){
+  return 0.5*Math.sin(x*0.45+y*0.21)+0.35*Math.sin(x*0.17-y*0.53+1.3)+0.15*Math.sin((x+y)*1.1+0.7);
+}
+function calcHauteurs(){
+  const t=J.tuiles, n=W*H, dist=new Int16Array(n).fill(-1), file=new Int32Array(n);
+  let deb=0, fin=0;
+  for(let i=0;i<n;i++) if(t[i]!==B.ROCHE){ dist[i]=0; file[fin++]=i; }
+  while(deb<fin){
+    const i=file[deb++], x=i%W, y=(i/W)|0, d=dist[i]+1;
+    for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+      const nx=x+dx, ny=y+dy; if((!dx&&!dy)||nx<0||ny<0||nx>=W||ny>=H) continue;
+      const j=ny*W+nx; if(dist[j]<0){ dist[j]=d; file[fin++]=j; }
+    }
+  }
+  hTuile=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    const x=i%W, y=(i/W)|0, tt=t[i];
+    if(tt===B.ROCHE){
+      const d=Math.max(1,dist[i]);
+      const grain=((Math.sin(x*12.9898+y*78.233)*43758.5453)%1+1)%1;
+      hTuile[i]=1.1+Math.min(d,8)*0.62+bruitRelief(x,y)*0.55*Math.min(1,(d-1)/2)+(d>=3?(grain-0.5)*0.35:0);
+    } else if(tt===B.EAU||tt===B.GUE) hTuile[i]=hautTuile(tt);
+    else hTuile[i]=0.035*Math.sin(x*1.7+y*0.9)+0.03*Math.sin(x*0.6-y*1.3);
+  }
 }
 function calcCoins(){
-  const t=J.tuiles; coins=new Float32Array((W+1)*(H+1));
+  calcHauteurs();
+  coins=new Float32Array((W+1)*(H+1));
   for(let y=0;y<=H;y++) for(let x=0;x<=W;x++){
     let s=0,n=0;
     for(let dy=-1;dy<=0;dy++) for(let dx=-1;dx<=0;dx++){
       const tx=x+dx, ty=y+dy; if(tx<0||ty<0||tx>=W||ty>=H) continue;
-      s+=hautTuile(t[ty*W+tx]); n++;
+      s+=hTuile[ty*W+tx]; n++;
     }
     coins[y*(W+1)+x]=n?s/n:0;
   }
+}
+/* normale lissée d'un coin, d'après la pente autour : plus de facettes en marches */
+function normaleCoin(x,y,out){
+  const c=function(a,b){ a=Math.max(0,Math.min(W,a)); b=Math.max(0,Math.min(H,b)); return coins[b*(W+1)+a]; };
+  const nx=c(x-1,y)-c(x+1,y), nz=c(x,y-1)-c(x,y+1), ny=2, l=Math.hypot(nx,ny,nz);
+  out[0]=nx/l; out[1]=ny/l; out[2]=nz/l;
 }
 function construireSol(){
   const t=J.tuiles, coul=J.couleurTuile;
   calcCoins();
   const ob=J.objets, vo=J.varObj;
-  const pos=new Float32Array(W*H*18), col=new Float32Array(W*H*18), uv=new Float32Array(W*H*12);
+  const pos=new Float32Array(W*H*18), col=new Float32Array(W*H*18), uv=new Float32Array(W*H*12), nor=new Float32Array(W*H*18);
+  /* normales de chaque coin, calculées une fois */
+  const nc=new Float32Array((W+1)*(H+1)*3), tmpN=[0,0,0];
+  for(let y=0;y<=H;y++) for(let x=0;x<=W;x++){ normaleCoin(x,y,tmpN); const o=(y*(W+1)+x)*3; nc[o]=tmpN[0]; nc[o+1]=tmpN[1]; nc[o+2]=tmpN[2]; }
   let p=0;
   for(let y=0;y<H;y++) for(let x=0;x<W;x++){
     const i=y*W+x;
     const a=coins[y*(W+1)+x], b=coins[y*(W+1)+x+1], c=coins[(y+1)*(W+1)+x], d=coins[(y+1)*(W+1)+x+1];
     const v=[[x,a,y],[x,c,y+1],[x+1,b,y],[x+1,b,y],[x,c,y+1],[x+1,d,y+1]];
     const k=couleurCase(i,t,coul,ob);
+    /* pentes raides plus sombres (roche nue à l'ombre des crêtes), replats plus clairs */
+    const pente=Math.max(Math.abs(a-d),Math.abs(b-c),Math.abs(a-b),Math.abs(a-c));
+    if(pente>0.25){ const sombre=1-Math.min(0.42,(pente-0.25)*0.38); k[0]*=sombre; k[1]*=sombre; k[2]*=sombre*1.02; }
     uvCase(t[i],vo?vo[i]:i*7,uv,i*12);
-    for(let q=0;q<6;q++){ pos[p]=v[q][0]; pos[p+1]=v[q][1]; pos[p+2]=v[q][2];
+    for(let q=0;q<6;q++){
+      pos[p]=v[q][0]; pos[p+1]=v[q][1]; pos[p+2]=v[q][2];
+      const o=((v[q][2])*(W+1)+v[q][0])*3; nor[p]=nc[o]; nor[p+1]=nc[o+1]; nor[p+2]=nc[o+2];
       col[p]=k[0]; col[p+1]=k[1]; col[p+2]=k[2]; p+=3; }
   }
   const g=new T3.BufferGeometry();
   g.setAttribute('position',new T3.BufferAttribute(pos,3));
   g.setAttribute('color',new T3.BufferAttribute(col,3));
   g.setAttribute('uv',new T3.BufferAttribute(uv,2));
-  g.computeVertexNormals();
+  g.setAttribute('normal',new T3.BufferAttribute(nor,3));
   if(terrain){ terrain.geometry.dispose(); terrain.geometry=g; }
   else { terrain=new T3.Mesh(g,matSol); terrain.receiveShadow=true; scene.add(terrain); }
   refTuiles=t; copieT=Uint8Array.from(t); copieC=coul.slice(); copieO=Uint8Array.from(ob);
@@ -9937,8 +9990,8 @@ function avecDecoupe(m,vent){
       '#include <clipping_planes_fragment>\n'+
       '{ vec3 ab=uCamP-uJoueurP; float t=clamp(dot(vMondeP-uJoueurP,ab)/dot(ab,ab),0.0,1.0);\n'+
       '  float d=length(vMondeP-(uJoueurP+ab*t));\n'+
-      '  if(t>0.02&&vMondeP.y>uJoueurP.y+0.3&&d<1.5){\n'+
-      '    float k=smoothstep(1.5,0.55,d)*smoothstep(0.02,0.12,t);\n'+
+      '  if(t>0.02&&t<0.92&&vMondeP.y>uJoueurP.y+0.3&&d<1.05){\n'+
+      '    float k=smoothstep(1.05,0.4,d)*smoothstep(0.02,0.12,t);\n'+
       '    float g=fract(sin(dot(floor(gl_FragCoord.xy),vec2(12.9898,78.233)))*43758.5453);\n'+
       '    if(g<k*0.82) discard; } }');
   };
@@ -10298,181 +10351,385 @@ for(const k in PEINTRE_PERSO){
 const K_PERSO=0.7;
 const matSacDos=new T3.MeshStandardMaterial({color:0x8a6038,map:TEX_P.cuir,roughness:.9,flatShading:true});
 const matBoucle=new T3.MeshStandardMaterial({color:0xc9a23c,roughness:.4,metalness:.6});
-function mStd(){ return new T3.MeshStandardMaterial({color:0x777777,map:TEX_P.uni,roughness:.85,flatShading:true}); }
-function habiller(M,look,forme){
-  const tissu=forme==='bete'?'fourrure':forme==='vol'?'plumes':forme==='objet'?'uni':(look.tissu||'tunique');
-  const jambes=forme==='bete'?'fourrure':forme==='bipede'?'pantalon':'uni';
-  const chef=forme==='bipede'?(look.coiffe==='casque'?'metal':look.coiffe==='capuche'?'tunique':'cheveux'):forme==='vol'?'plumes':'uni';
+/* =====================================================================
+   FIGURINES : corps arrondis et articulés (épaules, coudes, hanches, genoux),
+   visages, et une anatomie propre à chaque espèce.
+   ===================================================================== */
+const SEGF=16;
+const G2={
+  sph:new T3.SphereGeometry(0.5,SEGF+2,12),
+  demi:new T3.SphereGeometry(0.5,SEGF+2,10,0,Math.PI*2,0,Math.PI*0.55),
+  capuche:new T3.SphereGeometry(0.5,SEGF+2,12,0,Math.PI*2,0,Math.PI*0.74),
+  cyl:new T3.CylinderGeometry(0.5,0.5,1,SEGF,1),
+  conique:new T3.CylinderGeometry(0.4,0.5,1,SEGF,1),
+  cone:new T3.ConeGeometry(0.5,1,SEGF),
+  torse:(function(){
+    const p=[[0,0],[0.105,0],[0.118,0.05],[0.112,0.12],[0.125,0.2],[0.145,0.27],[0.15,0.31],[0.13,0.345],[0.06,0.37],[0,0.372]]
+      .map(function(a){ return new T3.Vector2(a[0],a[1]); });
+    const g=new T3.LatheGeometry(p,SEGF+4); g.scale(1,1,0.68); g.computeVertexNormals(); return g; })(),
+  jupe:(function(){
+    const p=[[0.118,0],[0.13,-0.06],[0.148,-0.15],[0.155,-0.17]].map(function(a){ return new T3.Vector2(a[0],a[1]); });
+    const g=new T3.LatheGeometry(p,SEGF+4); g.scale(1,1,0.72); g.computeVertexNormals(); return g; })(),
+  arc:(function(){ const g=new T3.TorusGeometry(0.3,0.014,6,18,Math.PI); g.rotateZ(-Math.PI/2); g.rotateY(Math.PI/2); return g; })()
+};
+function mStd(){ return new T3.MeshStandardMaterial({color:0x777777,map:TEX_P.uni,roughness:0.8,metalness:0}); }
+const matBlancOeil=new T3.MeshStandardMaterial({color:0xf2eee6,roughness:0.3});
+const matLevres=new T3.MeshStandardMaterial({color:0x8a4a40,roughness:0.6});
+const matTruffe=new T3.MeshStandardMaterial({color:0x1e1a18,roughness:0.35});
+const matCorne=new T3.MeshStandardMaterial({color:0xd8cdb4,roughness:0.55});
+const matSabot=new T3.MeshStandardMaterial({color:0x2a2420,roughness:0.6});
+const matBec=new T3.MeshStandardMaterial({color:0xd8a040,roughness:0.5});
+const matLame=new T3.MeshStandardMaterial({color:0xcfd6da,roughness:0.25,metalness:0.8});
+const matBoisArme=new T3.MeshStandardMaterial({color:0x7a5433,map:TEX_OBJ.ecorce,roughness:0.8});
+const matCasque=new T3.MeshStandardMaterial({color:0xa8b0b6,map:TEX_P.metal,roughness:0.35,metalness:0.7});
+function me(geo,m,px,py,pz,sx,sy,sz,parent){ const o=new T3.Mesh(geo,m); o.position.set(px,py,pz); o.scale.set(sx,sy,sz); o.castShadow=true; parent.add(o); return o; }
+function piv(px,py,pz,parent){ const g=new T3.Group(); g.position.set(px,py,pz); parent.add(g); return g; }
+
+/* ---------- humain ---------- */
+function creerHumain(){
+  const g=new T3.Group(); g.rotation.order='YXZ';
+  const M={corps:mStd(),jambes:mStd(),peau:mStd(),chef:mStd(),bottes:mStd(),
+    yeux:new T3.MeshBasicMaterial({color:0x2a1e18}),flamme:new T3.MeshBasicMaterial({color:0xffb040})};
+  M.bottes.color.set('#3a2a1e'); M.bottes.map=TEX_P.cuir; M.peau.roughness=0.65;
+  const u={M:M,kind:'humain'};
+  const haut=piv(0,0.56,0,g); u.haut=haut;
+  u.torse=me(G2.torse,M.corps,0,0,0,1,1,1,haut);
+  u.jupe=me(G2.jupe,M.corps,0,0.05,0,1,1,1,haut);
+  u.ceinture=me(G2.cyl,M.bottes,0,0.05,0,0.25,0.035,0.18,haut);
+  u.boucle=me(GEO.box,matBoucle,0,0.05,0.092,0.045,0.03,0.012,haut);
+  u.cou=me(G2.cyl,M.peau,0,0.39,0,0.075,0.07,0.07,haut);
+  u.sac=me(G2.sph,matSacDos,0,0.2,-0.11,0.2,0.26,0.11,haut);
+  /* tête */
+  const tete=piv(0,0.415,0,haut); u.tete=tete;
+  u.crane=me(G2.sph,M.peau,0,0.09,0,0.19,0.215,0.2,tete);
+  u.machoire=me(G2.sph,M.peau,0,0.045,0.02,0.15,0.11,0.15,tete);
+  u.nez=me(G2.cone,M.peau,0,0.085,0.1,0.028,0.05,0.03,tete); u.nez.rotation.x=1.35;
+  u.oreG=me(G2.sph,M.peau,-0.095,0.09,-0.005,0.03,0.052,0.035,tete);
+  u.oreD=me(G2.sph,M.peau,0.095,0.09,-0.005,0.03,0.052,0.035,tete);
+  u.blancG=me(G2.sph,matBlancOeil,-0.037,0.11,0.082,0.034,0.026,0.02,tete);
+  u.blancD=me(G2.sph,matBlancOeil,0.037,0.11,0.082,0.034,0.026,0.02,tete);
+  u.oeilG=me(G2.sph,M.yeux,-0.037,0.11,0.091,0.017,0.018,0.01,tete);
+  u.oeilD=me(G2.sph,M.yeux,0.037,0.11,0.091,0.017,0.018,0.01,tete);
+  u.sourcilG=me(GEO.box,M.chef,-0.038,0.135,0.09,0.042,0.009,0.01,tete);
+  u.sourcilD=me(GEO.box,M.chef,0.038,0.135,0.09,0.042,0.009,0.01,tete);
+  u.bouche=me(GEO.box,matLevres,0,0.048,0.093,0.04,0.008,0.01,tete);
+  u.chef=me(G2.demi,M.chef,0,0.112,-0.012,0.212,0.23,0.222,tete);
+  u.nuque=me(G2.sph,M.chef,0,0.075,-0.055,0.19,0.17,0.11,tete);
+  u.barbe=me(G2.sph,M.chef,0,0.035,0.05,0.135,0.1,0.09,tete);
+  u.capuche=me(G2.capuche,M.chef,0,0.08,-0.022,0.255,0.285,0.265,tete);
+  u.pointe=me(G2.cone,M.chef,0,0.12,-0.14,0.08,0.16,0.08,tete); u.pointe.rotation.x=-2.1;
+  u.casque=me(G2.demi,matCasque,0,0.108,0,0.228,0.24,0.235,tete);
+  u.nasal=me(GEO.box,matCasque,0,0.1,0.115,0.016,0.07,0.012,tete);
+  u.corneG=me(G2.cone,matCorne,-0.085,0.2,0,0.04,0.14,0.04,tete); u.corneG.rotation.z=0.55;
+  u.corneD=me(G2.cone,matCorne,0.085,0.2,0,0.04,0.14,0.04,tete); u.corneD.rotation.z=-0.55;
+  /* bras : épaule → coude → main */
+  [-1,1].forEach(function(c){
+    const b=piv(c*0.165,0.31,0,haut);
+    me(G2.sph,M.corps,0,0,0,0.1,0.1,0.1,b);
+    b.userData.haut=me(G2.conique,M.corps,0,-0.115,0,0.085,0.23,0.085,b);
+    const coude=piv(0,-0.235,0,b);
+    b.userData.bas=me(G2.conique,M.peau,0,-0.1,0,0.068,0.2,0.068,coude);
+    b.userData.main=me(G2.sph,M.peau,0,-0.215,0.005,0.058,0.07,0.05,coude);
+    b.userData.coude=coude;
+    if(c<0) u.brasG=b; else u.brasD=b;
+  });
+  /* armes et torche, tenues dans les mains */
+  const mD=u.brasD.userData.coude, mG=u.brasG.userData.coude;
+  u.poignee=me(GEO.box,matBoisArme,0,-0.215,0.03,0.03,0.03,0.11,mD);
+  u.garde=me(GEO.box,matLame,0,-0.215,0.085,0.1,0.02,0.02,mD);
+  u.lame=me(GEO.box,matLame,0,-0.215,0.32,0.036,0.012,0.44,mD);
+  u.hampe=me(G2.cyl,matBoisArme,0,-0.215,0.22,0.026,1.12,0.026,mD); u.hampe.rotation.x=Math.PI/2;
+  u.pointeLance=me(G2.cone,matLame,0,-0.215,0.82,0.05,0.13,0.05,mD); u.pointeLance.rotation.x=Math.PI/2;
+  u.hacheManche=me(G2.cyl,matBoisArme,0,-0.215,0.16,0.028,0.46,0.028,mD); u.hacheManche.rotation.x=Math.PI/2;
+  u.hacheTete=me(GEO.box,matLame,0,-0.16,0.34,0.022,0.13,0.1,mD);
+  u.arc=me(G2.arc,matBoisArme,0,-0.215,0.06,1,1,1,mD);
+  u.manche=me(G2.cyl,matBoisArme,0,-0.24,0.05,0.026,0.24,0.026,mG); u.manche.rotation.x=-0.4;
+  u.torche=me(G2.cone,M.flamme,0,-0.12,0.1,0.07,0.14,0.07,mG); u.torche.castShadow=false;
+  /* jambes : hanche → genou → pied */
+  [-1,1].forEach(function(c){
+    const j=piv(c*0.075,0.56,0,g);
+    j.userData.haut=me(G2.conique,M.jambes,0,-0.135,0,0.1,0.28,0.1,j);
+    const genou=piv(0,-0.27,0,j);
+    j.userData.bas=me(G2.conique,M.bottes,0,-0.12,0,0.085,0.25,0.085,genou);
+    j.userData.pied=me(G2.sph,M.bottes,0,-0.255,0.035,0.078,0.058,0.15,genou);
+    j.userData.genou=genou;
+    if(c<0) u.jambeG=j; else u.jambeD=j;
+  });
+  g.userData=u; scene.add(g); return g;
+}
+
+/* ---------- quadrupèdes ---------- */
+const ESPECES={
+  loup:{L:0.64,r:0.16,patte:0.42,cou:0.16,tete:0.12,museau:0.15,oreille:'pointe',queue:'touffue'},
+  cerf:{L:0.74,r:0.16,patte:0.62,cou:0.3,tete:0.11,museau:0.12,oreille:'feuille',queue:'courte',bois:true},
+  lapin:{L:0.3,r:0.12,patte:0.13,cou:0.04,tete:0.095,museau:0.05,oreille:'longue',queue:'pompon',ech:0.55},
+  sanglier:{L:0.6,r:0.21,patte:0.28,cou:0.06,tete:0.15,museau:0.17,oreille:'pointe',queue:'fine',defenses:true},
+  ours:{L:0.82,r:0.3,patte:0.44,cou:0.1,tete:0.2,museau:0.13,oreille:'ronde',queue:'courte'}
+};
+function creerQuadrupede(esp){
+  const P=ESPECES[esp]||ESPECES.loup;
+  const g=new T3.Group(); g.rotation.order='YXZ';
+  const M={corps:mStd(),jambes:mStd(),peau:mStd(),chef:mStd(),yeux:new T3.MeshBasicMaterial({color:0x111111})};
+  const u={M:M,kind:esp,P:P};
+  const yC=P.patte+P.r*0.25;
+  const corps=piv(0,yC,0,g); u.haut=corps;
+  u.torse=me(G2.sph,M.corps,0,0,0,P.r*2,P.r*1.9,P.L,corps);
+  me(G2.sph,M.corps,0,P.r*0.12,P.L*0.3,P.r*2.15,P.r*2.15,P.L*0.5,corps);
+  me(G2.sph,M.corps,0,P.r*0.06,-P.L*0.3,P.r*1.95,P.r*1.95,P.L*0.46,corps);
+  me(G2.sph,M.peau,0,-P.r*0.42,0.02,P.r*1.5,P.r*0.9,P.L*0.78,corps);
+  /* cou et tête */
+  const cou=piv(0,P.r*0.45,P.L*0.4,corps); cou.rotation.x=0.75;
+  me(G2.conique,M.corps,0,(P.cou+P.r*0.4)*0.5,0,P.r*1.15,P.cou+P.r*0.5,P.r*1.15,cou);
+  const tete=piv(0,P.cou+P.r*0.45,0,cou); tete.userData.base=-0.75; tete.rotation.x=-0.75; u.tete=tete;
+  me(G2.sph,M.corps,0,0,0,P.tete*2,P.tete*1.8,P.tete*2.1,tete);
+  u.chef=me(G2.conique,M.chef,0,-P.tete*0.22,P.tete*0.85+P.museau*0.45,P.tete*1.05,P.museau*1.05,P.tete*0.9,tete); u.chef.rotation.x=Math.PI/2;
+  me(G2.sph,matTruffe,0,-P.tete*0.2,P.tete*0.85+P.museau*0.98,P.tete*0.42,P.tete*0.32,P.tete*0.28,tete);
+  u.oeilG=me(G2.sph,M.yeux,-P.tete*0.6,P.tete*0.28,P.tete*0.62,P.tete*0.26,P.tete*0.24,P.tete*0.14,tete);
+  u.oeilD=me(G2.sph,M.yeux,P.tete*0.6,P.tete*0.28,P.tete*0.62,P.tete*0.26,P.tete*0.24,P.tete*0.14,tete);
+  [-1,1].forEach(function(c){
+    let o;
+    if(P.oreille==='pointe'){ o=me(G2.cone,M.corps,c*P.tete*0.55,P.tete*0.95,-P.tete*0.15,P.tete*0.5,P.tete*0.9,P.tete*0.28,tete); o.rotation.z=-c*0.3; }
+    else if(P.oreille==='feuille'){ o=me(G2.sph,M.corps,c*P.tete*0.95,P.tete*0.7,-P.tete*0.2,P.tete*0.9,P.tete*0.35,P.tete*0.2,tete); o.rotation.z=c*0.5; }
+    else if(P.oreille==='longue'){ o=me(G2.sph,M.corps,c*P.tete*0.35,P.tete*1.55,-P.tete*0.35,P.tete*0.42,P.tete*2.1,P.tete*0.2,tete); o.rotation.x=-0.35; o.rotation.z=-c*0.12; }
+    else { o=me(G2.sph,M.corps,c*P.tete*0.65,P.tete*0.8,-P.tete*0.1,P.tete*0.45,P.tete*0.45,P.tete*0.2,tete); }
+    if(P.bois){
+      /* bois du cerf : une perche et trois andouillers */
+      const b=piv(c*P.tete*0.4,P.tete*0.85,-P.tete*0.1,tete); b.rotation.z=-c*0.45; b.rotation.x=-0.25;
+      me(G2.cyl,matCorne,0,0.17,0,0.022,0.34,0.022,b);
+      [[0.1,0.7],[0.2,-0.6],[0.29,0.8]].forEach(function(a){ const t=piv(0,a[0],0,b); t.rotation.x=a[1]; me(G2.cone,matCorne,0,0.06,0,0.02,0.13,0.02,t); });
+    }
+    if(P.defenses){ const d=me(G2.cone,matCorne,c*P.tete*0.45,-P.tete*0.35,P.tete*0.85+P.museau*0.7,P.tete*0.16,P.tete*0.55,P.tete*0.16,tete); d.rotation.x=-0.6; d.rotation.z=c*0.4; }
+  });
+  /* pattes : épaule ou hanche → genou → sabot */
+  const pattes=[];
+  [[-1,1,'brasG'],[1,1,'brasD'],[-1,-1,'jambeG'],[1,-1,'jambeD']].forEach(function(a){
+    const p=piv(a[0]*P.r*0.6,P.patte,a[1]*P.L*0.32,g);
+    me(G2.conique,M.jambes,0,-P.patte*0.27,0,P.r*0.62,P.patte*0.58,P.r*0.62,p);
+    const genou=piv(0,-P.patte*0.52,0,p);
+    me(G2.conique,M.jambes,0,-P.patte*0.24,0,P.r*0.3,P.patte*0.5,P.r*0.3,genou);
+    me(G2.sph,(esp==='cerf'||esp==='sanglier')?matSabot:M.jambes,0,-P.patte*0.5,0.012,P.r*0.36,P.r*0.22,P.r*0.48,genou);
+    p.userData.genou=genou; u[a[2]]=p; pattes.push(p);
+  });
+  /* queue */
+  const q=piv(0,P.r*0.55,-P.L*0.48,corps); u.queue=q;
+  if(P.queue==='touffue'){ me(G2.sph,M.corps,0,0,-P.L*0.28,P.r*0.62,P.r*0.62,P.L*0.6,q); q.rotation.x=0.55; }
+  else if(P.queue==='pompon'){ me(G2.sph,M.peau,0,0,-P.r*0.15,P.r*0.8,P.r*0.8,P.r*0.8,q); }
+  else if(P.queue==='fine'){ me(G2.cyl,M.corps,0,0,-P.L*0.15,P.r*0.12,P.r*0.12,P.L*0.3,q); q.children[0].rotation.x=Math.PI/2; q.rotation.x=0.8; }
+  else { me(G2.sph,M.corps,0,0,-P.r*0.25,P.r*0.45,P.r*0.35,P.r*0.6,q); }
+  g.userData=u; scene.add(g); return g;
+}
+
+/* ---------- oiseaux (et créatures volantes) ---------- */
+function creerOiseau(){
+  const g=new T3.Group(); g.rotation.order='YXZ';
+  const M={corps:mStd(),jambes:mStd(),peau:mStd(),chef:mStd(),yeux:new T3.MeshBasicMaterial({color:0x111111})};
+  const u={M:M,kind:'oiseau'};
+  const corps=piv(0,0.3,0,g); u.haut=corps;
+  u.torse=me(G2.sph,M.corps,0,0,0,0.22,0.2,0.36,corps);
+  me(G2.sph,M.peau,0,-0.045,0.04,0.17,0.14,0.26,corps);
+  const tete=piv(0,0.08,0.17,corps); u.tete=tete;
+  me(G2.sph,M.corps,0,0,0,0.15,0.15,0.16,tete);
+  u.chef=me(G2.cone,matBec,0,-0.01,0.1,0.045,0.1,0.045,tete); u.chef.rotation.x=Math.PI/2;
+  u.oeilG=me(G2.sph,M.yeux,-0.05,0.025,0.05,0.03,0.03,0.02,tete);
+  u.oeilD=me(G2.sph,M.yeux,0.05,0.025,0.05,0.03,0.03,0.02,tete);
+  [-1,1].forEach(function(c){
+    const a=piv(c*0.09,0.04,0.02,corps);
+    me(G2.sph,M.chef,c*0.15,0,0,0.3,0.03,0.17,a);
+    const bout=piv(c*0.28,0,0,a);
+    me(G2.sph,M.chef,c*0.14,0,-0.03,0.3,0.022,0.12,bout);
+    a.userData.bout=bout;
+    if(c<0) u.brasG=a; else u.brasD=a;
+  });
+  u.queue=me(G2.sph,M.chef,0,0.01,-0.25,0.15,0.022,0.2,corps);
+  [-1,1].forEach(function(c){ const p=piv(c*0.05,-0.08,0.02,corps); me(G2.cyl,matBec,0,-0.06,0,0.012,0.12,0.012,p); if(c<0) u.jambeG=p; else u.jambeD=p; });
+  g.userData=u; scene.add(g); return g;
+}
+
+/* ---------- convois et navires ---------- */
+function creerObjet(){
+  const g=new T3.Group(); g.rotation.order='YXZ';
+  const M={corps:mStd(),jambes:mStd(),peau:mStd(),chef:mStd(),yeux:new T3.MeshBasicMaterial({color:0x111111})};
+  M.corps.map=TEX_OBJ.bois; M.peau.map=TEX_P.tissu||TEX_OBJ.tissu;
+  const u={M:M,kind:'objet'};
+  u.torse=me(GEO.box,M.corps,0,0.38,0,0.9,0.4,1.4,g);
+  u.tete=me(G2.sph,M.peau,0,0.68,-0.1,0.8,0.55,1.05,g);
+  u.roues=[];
+  [[-0.5,0.4],[0.5,0.4],[-0.5,-0.4],[0.5,-0.4]].forEach(function(p){ const r=me(G2.cyl,M.chef,p[0],0.25,p[1],0.42,0.07,0.42,g); r.rotation.z=Math.PI/2; u.roues.push(r); });
+  g.userData=u; scene.add(g); return g;
+}
+
+/* ---------- réserves par espèce ---------- */
+const pools={};
+function creerFig(kind){
+  if(kind==='humain') return creerHumain();
+  if(kind==='oiseau') return creerOiseau();
+  if(kind==='objet') return creerObjet();
+  return creerQuadrupede(kind);
+}
+function prendre(kind){
+  kind=kind||'humain';
+  const P=pools[kind]||(pools[kind]={a:[],n:0});
+  if(P.n>=P.a.length) P.a.push(creerFig(kind));
+  const f=P.a[P.n++]; f.visible=true; return f;
+}
+function debutFigs(){ for(const k in pools) pools[k].n=0; }
+function finFigs(){ for(const k in pools){ const P=pools[k]; for(let i=P.n;i<P.a.length;i++) P.a[i].visible=false; } }
+function especeMob(m){
+  if(m.t==='rodeur') return 'loup';
+  if(m.t==='gueule') return 'ours';
+  const d=J.HOSTILES[m.t]||{};
+  if(m.vole||d.vole) return 'oiseau';
+  return 'humain';
+}
+function especeBete(b){
+  if(b.t==='cerf'||b.t==='lapin'||b.t==='sanglier') return b.t;
+  if(b.vole||b.t==='oiseau') return 'oiseau';
+  return 'loup';
+}
+const LOOK_BETE={
+  lapin:{corps:'#9a8a74',jambes:'#8a7a64',chef:'#a89880',peau:'#ece4d4',yeux:'#111111'},
+  cerf:{corps:'#8a5a34',jambes:'#7a4e2c',chef:'#9a6a40',peau:'#e0cca8',yeux:'#111111'},
+  sanglier:{corps:'#4a3a2e',jambes:'#3a2e24',chef:'#5a4a3c',peau:'#6a5a4a',yeux:'#111111'},
+  oiseau:{corps:'#8a6e52',jambes:'#c89a50',chef:'#6a5440',peau:'#e2d2b2',yeux:'#111111'},
+  loup:{corps:'#6a645a',jambes:'#5a554c',chef:'#8a8478',peau:'#a8a294',yeux:'#111111'}
+};
+
+function habiller(M,look,kind){
+  let tissu, jambes, chef;
+  if(kind==='humain'){ tissu=look.tissu||'tunique'; jambes='uni'; chef=look.coiffe==='casque'?'metal':look.coiffe==='capuche'?'tunique':'cheveux'; }
+  else if(kind==='oiseau'){ tissu='plumes'; jambes='uni'; chef='plumes'; }
+  else if(kind==='objet'){ return; }
+  else if(look.pierre){ M.corps.map=M.jambes.map=M.chef.map=TEX_OBJ.roche; return; }
+  else { tissu='fourrure'; jambes=tissu; chef=tissu; }
   if(M.corps.map!==TEX_P[tissu]) M.corps.map=TEX_P[tissu];
   if(M.jambes.map!==TEX_P[jambes]) M.jambes.map=TEX_P[jambes];
   if(M.chef.map!==TEX_P[chef]) M.chef.map=TEX_P[chef];
 }
-function membre(m){
-  const p=new T3.Group(); const me=new T3.Mesh(GEO.box,m); me.castShadow=true; p.add(me); p.userData.m=me; return p;
-}
-function figurine(){
-  const g=new T3.Group();
-  const M={corps:mStd(),jambes:mStd(),peau:mStd(),chef:mStd(),
-    yeux:new T3.MeshBasicMaterial({color:0x111111}),
-    arme:new T3.MeshStandardMaterial({color:0xb9c0c2,roughness:.45,metalness:.35,flatShading:true}),
-    flamme:new T3.MeshBasicMaterial({color:0xffb040})};
-  const u={M:M};
-  u.torse=new T3.Mesh(GEO.box,M.corps);
-  u.ceinture=new T3.Mesh(GEO.box,M.jambes);
-  u.tete=new T3.Mesh(GEO.sph,M.peau);
-  u.chef=new T3.Mesh(GEO.sph,M.chef);
-  u.oeilG=new T3.Mesh(GEO.box,M.yeux); u.oeilD=new T3.Mesh(GEO.box,M.yeux);
-  u.corneG=new T3.Mesh(GEO.cone,M.chef); u.corneD=new T3.Mesh(GEO.cone,M.chef);
-  u.queue=new T3.Mesh(GEO.box,M.corps);
-  u.brasG=membre(M.corps); u.brasD=membre(M.corps);
-  u.jambeG=membre(M.jambes); u.jambeD=membre(M.jambes);
-  u.mainG=new T3.Mesh(GEO.box,M.peau); u.mainD=new T3.Mesh(GEO.box,M.peau);
-  u.brasG.add(u.mainG); u.brasD.add(u.mainD);
-  u.arme=new T3.Mesh(GEO.box,M.arme); u.lame=new T3.Mesh(GEO.box,M.arme);
-  u.brasD.add(u.arme); u.brasD.add(u.lame);
-  u.torche=new T3.Mesh(GEO.cone,M.flamme); u.manche=new T3.Mesh(GEO.box,mat('#6b4a2a'));
-  u.sac=new T3.Mesh(GEO.box,matSacDos); u.boucle=new T3.Mesh(GEO.box,matBoucle);
-  u.sac.castShadow=true; g.add(u.sac); g.add(u.boucle);
-  u.brasG.add(u.torche); u.brasG.add(u.manche);
-  [u.torse,u.ceinture,u.tete,u.chef,u.oeilG,u.oeilD,u.corneG,u.corneD,u.queue,u.brasG,u.brasD,u.jambeG,u.jambeD].forEach(function(m){
-    if(m.isMesh) m.castShadow=true; g.add(m); });
-  [u.arme,u.lame,u.manche,u.mainG,u.mainD].forEach(function(m){ m.castShadow=true; });
-  g.userData=u; g.rotation.order='YXZ';   /* tourner d'abord, puis pencher : les penchés suivent le regard */
-  scene.add(g); return g;
-}
-const pool=[]; let nPool=0;
-function prendre(){ if(nPool>=pool.length) pool.push(figurine()); const f=pool[nPool++]; f.visible=true; return f; }
-const tmpC=new T3.Color();
+function vis(o,v){ o.visible=!!v; }
+
 /* Pose une figurine.
    e     : l'entité (x, y, fx, fy) — on y garde sa propre cadence de pas
-   forme : 'bipede' | 'bete' | 'vol' | 'objet'
-   look  : {corps, jambes, peau, chef, coiffe, yeux, lueur, carrure}
-   o     : {arme, attaque (0..1 ou -1), torche, alt, flash, pare, roule} */
-function cache(u,liste){ liste.forEach(function(k){ u[k].visible=false; }); }
-function bloc(m,px,py,pz,sx,sy,sz){ m.visible=true; m.position.set(px,py,pz); m.scale.set(sx,sy,sz); m.rotation.set(0,0,0); }
+   forme : 'bipede' | 'bete' | 'vol' | 'objet' (la forme réelle vient de la figurine)
+   look  : {corps, jambes, peau, chef, coiffe, yeux, lueur, carrure, tissu, sac, barbe}
+   o     : {arme, torche, alt, flash, pare, roule, pose} */
 function poser(f,e,forme,look,taille,o,dt){
   const u=f.userData, M=u.M, X=e.x/TS, Z=e.y/TS, h=solEn(X,Z);
-  /* cadence de marche : on mesure le pas réel depuis la dernière image */
   const dx=e.x-(e.__ax===undefined?e.x:e.__ax), dy=e.y-(e.__ay===undefined?e.y:e.__ay);
   e.__ax=e.x; e.__ay=e.y;
-  const vit=Math.min(1,Math.hypot(dx,dy)/Math.max(0.001,dt)/120);
-  e.__ph=(e.__ph||0)+Math.hypot(dx,dy)*0.13/Math.max(0.6,taille);
+  const pas=Math.hypot(dx,dy), vit=Math.min(1,pas/Math.max(0.001,dt)/120);
+  e.__ph=(e.__ph||0)+pas*0.13/Math.max(0.6,taille);
   e.__vit=(e.__vit||0)*0.8+vit*0.2;
-  const s=Math.sin(e.__ph)*0.75*e.__vit, rebond=Math.abs(Math.cos(e.__ph))*0.05*e.__vit;
+  const ph=e.__ph, v=e.__vit, T=S3t()/1000;
 
   f.position.set(X,h+(o.alt||0)/TS,Z);
   if(Math.abs(e.fx||0)+Math.abs(e.fy||0)>0.01) f.rotation.y=Math.atan2(e.fx||0,e.fy||0);
   f.rotation.x=0; f.rotation.z=0;
-  /* échelle humaine : une case fait à peu près deux pas, un homme y tient debout sans la remplir */
-  const tk=taille*K_PERSO;
+  /* taille réelle de l'espèce : un passereau tient dans la main, un lapin arrive à la cheville */
+  let tk=taille*K_PERSO;
+  if(u.kind==='oiseau'&&!look.feu&&!look.lueur) tk*=0.38;
+  else if(u.P&&u.P.ech) tk*=u.P.ech;
   f.scale.setScalar(tk);
-  /* le choc d'un coup : la figurine s'écrase un instant */
-  if(o.flash>0) f.scale.set(tk*1.12,tk*0.84,tk*1.12);
+  if(o.flash>0) f.scale.set(tk*1.1,tk*0.88,tk*1.1);
 
   M.corps.color.set(look.corps); M.jambes.color.set(look.jambes||look.corps);
   M.peau.color.set(look.peau||look.corps); M.chef.color.set(look.chef||look.corps);
-  M.yeux.color.set(look.yeux||'#111111');
-  habiller(M,look,forme);
-  const em=o.flash>0?0.85:0;
+  M.yeux.color.set(look.lueur?look.yeux:(look.yeux||'#1e1612'));
+  const em=o.flash>0?0.8:0;
   [M.corps,M.jambes,M.peau,M.chef].forEach(function(m){ m.emissive.setRGB(em,em,em); });
+  if(look.feu&&!(o.flash>0)){ M.corps.emissive.setRGB(0.55,0.17,0.02); M.chef.emissive.setRGB(0.65,0.25,0.03); M.peau.emissive.setRGB(0.7,0.4,0.05); }
+  habiller(M,look,u.kind);
 
-  const tout=['torse','ceinture','tete','chef','oeilG','oeilD','corneG','corneD','queue','arme','lame','torche','manche','mainG','mainD','sac','boucle'];
-  cache(u,tout);
-  [u.brasG,u.brasD,u.jambeG,u.jambeD].forEach(function(p){ p.visible=true; p.rotation.set(0,0,0); });
+  if(u.kind==='humain') animerHumain(u,f,look,o,ph,v,T);
+  else if(u.kind==='oiseau') animerOiseau(u,f,look,o,ph,v,T,e);
+  else if(u.kind==='objet') animerObjet(u,f,ph);
+  else animerQuadrupede(u,f,look,o,ph,v,T);
 
-  if(forme==='bete'){
-    const y0=.42+rebond;
-    bloc(u.torse,0,y0,0,.38,.32,.78);
-    bloc(u.tete,0,y0+.14,.46,.3,.28,.32);
-    bloc(u.chef,0,y0+.08,.64,.16,.13,.2);                 /* museau */
-    bloc(u.oeilG,-.08,y0+.2,.58,.05,.05,.03); bloc(u.oeilD,.08,y0+.2,.58,.05,.05,.03);
-    bloc(u.corneG,-.09,y0+.33,.42,.08,.16,.08); bloc(u.corneD,.09,y0+.33,.42,.08,.16,.08);
-    bloc(u.queue,0,y0+.08,-.48,.07,.07,.32); u.queue.rotation.x=0.6+Math.sin(e.__ph*2)*0.2;
-    const pattes=[[u.jambeG,-.13,.26,s],[u.jambeD,.13,.26,-s],[u.brasG,-.13,-.26,-s],[u.brasD,.13,-.26,s]];
-    pattes.forEach(function(p){ p[0].position.set(p[1],y0-.1,p[2]); p[0].rotation.x=p[3];
-      bloc(p[0].userData.m,0,-.16,0,.1,.32,.1); p[0].userData.m.material=M.jambes; });
-  } else if(forme==='vol'){
-    const bat=Math.sin(S3t()/70+X*3)*0.8;
-    bloc(u.torse,0,.3,0,.24,.22,.42);
-    bloc(u.tete,0,.38,.27,.22,.22,.22);
-    bloc(u.chef,0,.36,.42,.08,.06,.12);                    /* bec */
-    bloc(u.oeilG,-.07,.43,.36,.04,.04,.03); bloc(u.oeilD,.07,.43,.36,.04,.04,.03);
-    bloc(u.queue,0,.32,-.3,.18,.03,.22);
-    u.brasG.position.set(-.1,.36,0); u.brasD.position.set(.1,.36,0);
-    u.brasG.rotation.z=bat; u.brasD.rotation.z=-bat;
-    bloc(u.brasG.userData.m,-.3,0,0,.6,.03,.32); bloc(u.brasD.userData.m,.3,0,0,.6,.03,.32);
-    u.brasG.userData.m.material=M.chef; u.brasD.userData.m.material=M.chef;
-    u.jambeG.visible=false; u.jambeD.visible=false;
-  } else if(forme==='objet'){
-    bloc(u.torse,0,.38,0,.9,.4,1.4);
-    bloc(u.tete,0,.78,-.1,.7,.45,.9);
-    bloc(u.queue,0,.6,.8,.06,.06,.6);
-    u.brasG.position.set(-.48,.25,.4); u.brasD.position.set(.48,.25,-.4);
-    u.jambeG.position.set(-.48,.25,-.4); u.jambeD.position.set(.48,.25,.4);
-    [u.brasG,u.brasD,u.jambeG,u.jambeD].forEach(function(p){
-      p.rotation.x=e.__ph*2; bloc(p.userData.m,0,0,0,.08,.42,.42); p.userData.m.material=M.chef; });
-  } else {
-    /* bipède */
-    const c=look.carrure||1, b=rebond;
-    u.jambeG.position.set(-.09*c,.46+b,0); u.jambeD.position.set(.09*c,.46+b,0);
-    u.jambeG.rotation.x=s; u.jambeD.rotation.x=-s;
-    bloc(u.jambeG.userData.m,0,-.23,0,.13*c,.46,.14); bloc(u.jambeD.userData.m,0,-.23,0,.13*c,.46,.14);
-    u.jambeG.userData.m.material=M.jambes; u.jambeD.userData.m.material=M.jambes;
-    bloc(u.ceinture,0,.49+b,0,.35*c,.08,.235);
-    bloc(u.boucle,0,.49+b,.12,.07,.06,.02);
-    if(look.sac) bloc(u.sac,0,.72+b,-.16,.26*c,.3,.1);
-    bloc(u.torse,0,.7+b,0,.34*c,.38,.21);
-    /* Les bras sont décollés du torse d'un cheveu : avant, leur face intérieure
-       tombait exactement sur le flanc du torse, et les deux surfaces se battaient
-       à l'écran (le clignotement des épaules). */
-    const ep=.17*c+.058;
-    u.brasG.position.set(-ep,.865+b,0); u.brasD.position.set(ep,.865+b,0);
-    bloc(u.brasG.userData.m,0,-.19,0,.1,.38,.11); bloc(u.brasD.userData.m,0,-.19,0,.1,.38,.11);
-    u.brasG.userData.m.material=M.corps; u.brasD.userData.m.material=M.corps;
-    bloc(u.mainG,0,-.4,0,.09,.08,.09); bloc(u.mainD,0,-.4,0,.09,.08,.09);
-    u.brasG.rotation.x=-s*0.8; u.brasD.rotation.x=s*0.8;
-    u.brasG.rotation.z=-0.08; u.brasD.rotation.z=0.08;
-    const ty=1.05+b;
-    bloc(u.tete,0,ty,0,.27,.28,.27);
-    bloc(u.oeilG,-.06,ty+.02,.125,.04,.05,.02); bloc(u.oeilD,.06,ty+.02,.125,.04,.05,.02);
-    const co=look.coiffe;
-    if(co==='cheveux') bloc(u.chef,0,ty+.07,-.025,.29,.18,.29);
-    else if(co==='casque'){ bloc(u.chef,0,ty+.06,0,.31,.2,.31); }
-    else if(co==='capuche'){ bloc(u.chef,0,ty+.02,-.045,.33,.33,.31); }
-    else if(co==='cornes'){
-      bloc(u.corneG,-.12,ty+.14,0,.07,.2,.07); u.corneG.rotation.z=0.5;
-      bloc(u.corneD,.12,ty+.14,0,.07,.2,.07); u.corneD.rotation.z=-0.5;
-    }
-    /* arme dans la main droite */
-    const a=o.arme;
-    if(a==='epee'){ bloc(u.arme,0,-.41,.06,.05,.05,.14); M.arme.color.set('#6b4a2a'); bloc(u.lame,0,-.41,.36,.05,.03,.48); }
-    else if(a==='lance'){ bloc(u.arme,0,-.41,.25,.04,.04,1.3); M.arme.color.set('#8a5a33'); bloc(u.lame,0,-.41,.95,.07,.05,.18); }
-    else if(a==='hache'){ bloc(u.arme,0,-.41,.2,.045,.045,.55); M.arme.color.set('#8a5a33'); bloc(u.lame,0,-.33,.42,.04,.2,.12); }
-    else if(a==='arc'){ bloc(u.arme,0,-.41,.06,.035,.7,.05); M.arme.color.set('#7a5433'); }
-    if(u.lame.visible) u.lame.material=mat('#c9d0d2');
-    /* torche dans la main gauche */
-    if(o.torche){ bloc(u.manche,0,-.48,.06,.05,.24,.05); bloc(u.torche,0,-.31,.06,.09,.16,.09);
-      u.torche.scale.y=.14+Math.random()*.06; u.brasG.rotation.x=-0.7; }
-    /* attaque : le bras droit balaie de haut en bas */
-    if(o.attaque>=0){ u.brasD.rotation.x=-2.5+o.attaque*3.0; u.brasD.rotation.z=0.25; }
-    if(o.pare){ u.brasD.rotation.x=-1.3; u.brasG.rotation.x=-1.3; u.brasD.rotation.z=-0.5; u.brasG.rotation.z=0.5; }
-    if(o.roule){ f.rotation.x=o.roule; }
-  }
   /* une pose particulière (attaque, pouvoir, récolte...) prend la main en dernier */
   if(o.pose) o.pose(u,f,forme);
-  /* les yeux des créatures hostiles luisent dans le noir */
-  if(look.lueur){ M.yeux.color.set(look.yeux); }
 }
+function animerHumain(u,f,look,o,ph,v,T){
+  const c=look.carrure||1;
+  /* silhouette : carrure, coiffe, barbe, sac */
+  u.torse.scale.set(c,1,c); u.jupe.scale.set(c,1,c); u.ceinture.scale.set(0.25*c,0.035,0.18*c);
+  u.brasG.position.x=-0.165*c; u.brasD.position.x=0.165*c;
+  u.jambeG.position.x=-0.075*c; u.jambeD.position.x=0.075*c;
+  [u.brasG,u.brasD].forEach(function(b){ b.userData.haut.scale.set(0.085*c,0.23,0.085*c); });
+  [u.jambeG,u.jambeD].forEach(function(j){ j.userData.haut.scale.set(0.1*c,0.28,0.1*c); });
+  const co=look.coiffe||'cheveux';
+  vis(u.chef,co==='cheveux'); vis(u.nuque,co==='cheveux'||co==='casque');
+  vis(u.capuche,co==='capuche'); vis(u.pointe,co==='capuche');
+  vis(u.casque,co==='casque'); vis(u.nasal,co==='casque');
+  vis(u.corneG,co==='cornes'); vis(u.corneD,co==='cornes');
+  vis(u.barbe,!!look.barbe); vis(u.sac,!!look.sac);
+  /* marche : la cuisse balance, le genou plie au retour, les bras répondent */
+  const s=Math.sin(ph)*0.65*v;
+  u.jambeG.rotation.set(s,0,0); u.jambeD.rotation.set(-s,0,0);
+  u.jambeG.userData.genou.rotation.set(Math.max(0,Math.sin(ph+1.3))*1.05*v,0,0);
+  u.jambeD.userData.genou.rotation.set(Math.max(0,Math.sin(ph+Math.PI+1.3))*1.05*v,0,0);
+  u.brasG.rotation.set(-s*0.8,0,-0.07); u.brasD.rotation.set(s*0.8,0,0.07);
+  u.brasG.userData.coude.rotation.set(-0.22-Math.max(0,Math.sin(ph))*0.5*v,0,0);
+  u.brasD.userData.coude.rotation.set(-0.22-Math.max(0,-Math.sin(ph))*0.5*v,0,0);
+  u.haut.rotation.set(0.04*v,Math.sin(ph)*0.1*v,0);
+  u.haut.position.y=0.56+Math.abs(Math.cos(ph))*0.025*v;
+  u.torse.scale.y=1+Math.sin(T*2.2)*0.012*(1-v);
+  u.tete.rotation.set(0,Math.sin(T*0.5)*0.12*(1-v),0);
+  /* armes */
+  const a=o.arme;
+  vis(u.poignee,a==='epee'); vis(u.garde,a==='epee'); vis(u.lame,a==='epee');
+  vis(u.hampe,a==='lance'); vis(u.pointeLance,a==='lance');
+  vis(u.hacheManche,a==='hache'); vis(u.hacheTete,a==='hache');
+  vis(u.arc,a==='arc');
+  vis(u.manche,!!o.torche); vis(u.torche,!!o.torche);
+  if(o.torche){ u.brasG.rotation.x=-0.75; u.brasG.userData.coude.rotation.x=-0.6; u.torche.scale.y=0.12+Math.random()*0.05; }
+  if(o.pare){ u.brasD.rotation.set(-1.35,0,-0.45); u.brasG.rotation.set(-1.35,0,0.45);
+    u.brasD.userData.coude.rotation.x=-0.9; u.brasG.userData.coude.rotation.x=-0.9; }
+  if(o.roule) f.rotation.x=o.roule;
+}
+function animerQuadrupede(u,f,look,o,ph,v,T){
+  const P=u.P;
+  /* trot : les pattes vont par paires croisées */
+  const s=Math.sin(ph*1.15)*0.6*v, k=function(p){ return Math.max(0,Math.sin(p))*0.9*v; };
+  u.brasG.rotation.set(s,0,0); u.jambeD.rotation.set(s*0.9,0,0);
+  u.brasD.rotation.set(-s,0,0); u.jambeG.rotation.set(-s*0.9,0,0);
+  u.brasG.userData.genou.rotation.set(-k(ph*1.15+1.2),0,0); u.jambeD.userData.genou.rotation.set(k(ph*1.15+1.2),0,0);
+  u.brasD.userData.genou.rotation.set(-k(ph*1.15+Math.PI+1.2),0,0); u.jambeG.userData.genou.rotation.set(k(ph*1.15+Math.PI+1.2),0,0);
+  const yC=P.patte+P.r*0.25;
+  u.haut.position.y=yC+Math.abs(Math.cos(ph*1.15))*0.03*v;
+  u.haut.rotation.set(Math.sin(ph*2.3)*0.03*v,0,0);
+  if(u.kind==='lapin'&&v>0.05){ const bond=Math.abs(Math.sin(ph*0.9)); u.haut.position.y+=bond*0.12; f.position.y+=bond*0.05; }
+  u.tete.rotation.set(u.tete.userData.base+Math.sin(ph*1.15)*0.08*v+Math.sin(T*0.7)*0.05*(1-v),Math.sin(T*0.4)*0.15*(1-v),0);
+  if(u.queue) u.queue.rotation.y=Math.sin(T*(u.kind==='loup'?3:5))*0.25;
+}
+function animerOiseau(u,f,look,o,ph,v,T,e){
+  const vole=(o.alt||0)>4||v>0.5;
+  if(vole){
+    const bat=Math.sin(T*(look.lueur?11:14)+(e.x||0))*0.85;
+    u.brasG.rotation.set(0,0,-bat); u.brasD.rotation.set(0,0,bat);
+    u.brasG.userData.bout.rotation.z=-Math.sin(T*14-0.6)*0.45; u.brasD.userData.bout.rotation.z=Math.sin(T*14-0.6)*0.45;
+    u.haut.rotation.x=0.15; u.jambeG.rotation.x=u.jambeD.rotation.x=0.9;
+  } else {
+    /* posé : ailes repliées, petits sauts en avançant */
+    u.brasG.rotation.set(0,0.3,0.25); u.brasD.rotation.set(0,-0.3,-0.25);
+    u.brasG.userData.bout.rotation.z=0.6; u.brasD.userData.bout.rotation.z=-0.6;
+    u.haut.rotation.x=-0.1; u.jambeG.rotation.x=u.jambeD.rotation.x=0;
+    f.position.y+=Math.abs(Math.sin(ph*1.6))*0.06*v;
+    u.tete.rotation.x=Math.sin(T*3+(e.x||0))*0.2;
+  }
+  /* les créatures de flamme sèment des braises */
+  if(look.feu&&Math.random()<0.5) etincelle(f.position.x+(Math.random()-.5)*.3,f.position.y+0.2,f.position.z+(Math.random()-.5)*.3,
+    (Math.random()-.5)*.4,-0.3,(Math.random()-.5)*.4,Math.random()<.5?'#ffb040':'#ff6a2a',0.05,0.5,1,true);
+}
+function animerObjet(u,f,ph){ u.roues.forEach(function(r){ r.rotation.x=ph*2; }); }
 let S3t=function(){ return J.S?J.S.t:0; };
 const LOOK={
   joueur:{corps:'#46658a',jambes:'#5a4632',peau:'#e0c09a',chef:'#5a3a22',coiffe:'cheveux',tissu:'tunique',sac:1},
-  rodeur:['bete',{corps:'#4a4b42',jambes:'#3a3b34',chef:'#2e2f28',yeux:'#ff4a2a',lueur:1}],
+  rodeur:['bete',{corps:'#4e4c46',jambes:'#3e3c38',chef:'#5e5a52',peau:'#77736a',yeux:'#ff4a2a',lueur:1}],
   decocheur:['bipede',{corps:'#566a44',jambes:'#46462e',peau:'#9aa08a',chef:'#46583a',coiffe:'capuche',yeux:'#ffd04a',lueur:1,tissu:'cuir'},'arc'],
   broyeur:['bipede',{corps:'#6a5644',jambes:'#4a3c2e',peau:'#7a6a5a',chef:'#d8cdb4',coiffe:'cornes',carrure:1.5,yeux:'#ff6a2a',lueur:1,tissu:'fourrure'}],
-  gobe:['vol',{corps:'#e0742f',chef:'#f7a050',yeux:'#fff2a0',lueur:1}],
+  gobe:['vol',{corps:'#e0742f',chef:'#f7a050',peau:'#ffd070',yeux:'#fff2a0',lueur:1,feu:1}],
   bandit:['bipede',{corps:'#9a3a30',jambes:'#4a3a2e',peau:'#d8b08a',chef:'#3a302a',coiffe:'capuche',tissu:'cuir'},'epee'],
-  gueule:['bete',{corps:'#6b6f68',jambes:'#4e524c',chef:'#4e524c',yeux:'#ff8a3a',lueur:1}],
-  portecendres:['vol',{corps:'#4a2620',chef:'#2a1410',yeux:'#ff6a2a',lueur:1}],
+  gueule:['bete',{corps:'#7a7e78',jambes:'#5e625c',chef:'#5e625c',peau:'#8a8e88',yeux:'#ff8a3a',lueur:1,pierre:1}],
+  portecendres:['vol',{corps:'#4a2620',chef:'#2a1410',peau:'#6a3020',yeux:'#ff6a2a',lueur:1,feu:1}],
   defaut:['bipede',{corps:'#7a3030',jambes:'#3a2a24',peau:'#b89a7a',chef:'#2a2020',coiffe:'capuche',yeux:'#ff4a2a',lueur:1}]
 };
 const HABITS=['#5a6f8a','#7a5a8a','#5a8a6a','#8a7a5a','#8a5a5a','#6a7a8a'];
@@ -10487,7 +10744,8 @@ function lookDePnj(p){
   l={look:{corps:garde?'#5a6470':/marchand/i.test(role)?'#b08a3a':/forge/i.test(role)?'#4a3a32':HABITS[k%HABITS.length],
     jambes:/forge/i.test(role)?'#2e2620':'#4a3e30', peau:PEAUX[(k>>3)%PEAUX.length],
     chef:garde?'#9aa2a8':CHEVEUX[(k>>5)%CHEVEUX.length], coiffe:garde?'casque':'cheveux',
-    tissu:garde?'maille':/forge/i.test(role)?'cuir':'tunique'},
+    tissu:garde?'maille':/forge/i.test(role)?'cuir':'tunique',
+    barbe:!/enfant/i.test(role)&&(k%3===0||/forge|bucheron|seigneur/i.test(role))},
     arme:garde?'lance':null};
   lookPnj.set(p,l); return l;
 }
@@ -11153,7 +11411,7 @@ function poseMob(m){
     if(m.__atk>0){
       const t=1-m.__atk/0.38, s=Math.sin(t*Math.PI), off=(forme==='bete'?0.45:0.32)*s;
       f.position.x+=Math.sin(a)*off; f.position.z+=Math.cos(a)*off;
-      if(forme==='bete'){ f.rotation.x=0.2*s; u.tete.position.y-=0.06*s; u.chef.position.y-=0.06*s; }
+      if(u.kind!=='humain'&&u.kind!=='oiseau'){ f.rotation.x=0.15*s; u.tete.rotation.x+=0.45*s; }
       else if(m.t==='broyeur'||(J.HOSTILES[m.t]||{}).boss){
         u.brasG.rotation.x=u.brasD.rotation.x=t<0.5?-3*t*2:-3+2.8*(t-0.5)*2; f.rotation.x=t<0.5?-0.2:0.3;
         if(!m.__fracas&&t>0.6){ m.__fracas=true; fracas(f.position.x+Math.sin(a)*1.1,f.position.z+Math.cos(a)*1.1,1.3); }
@@ -11566,14 +11824,14 @@ function rendre(dt){
   }
 
   /* êtres */
-  nPool=0;
+  debutFigs();
   const j=S.j;
   const DT=dt||0.016;
   const an=j.anim||{};
   const enCoup=an.n&&an.n!=='repos'&&an.d>0&&an.t<an.d;
   const armeJ=S.outils.lance?'lance':S.outils.hache?'hache':(S.outils.arc&&j.cdTir>0)?'arc':null;
   const lookJ=j.invul>0&&((S.t/60|0)%2)?Object.assign({},LOOK.joueur,{corps:'#9fb4cf'}):LOOK.joueur;
-  poser(prendre(),j,'bipede',lookJ,1.15,{arme:(an.n==='pouvoir'&&anim.pouvoir&&anim.pouvoir.id!=='arcane')?null:armeJ,attaque:-1,
+  poser(prendre('humain'),j,'bipede',lookJ,1.15,{arme:(an.n==='pouvoir'&&anim.pouvoir&&anim.pouvoir.id!=='arcane')?null:armeJ,attaque:-1,
     torche:S.torcheOn,pare:!!j.pare&&!enCoup,roule:0,flash:0,pose:poseJoueur},DT);
   const H2=J.HOSTILES;
   nBloc=0;
@@ -11585,7 +11843,7 @@ function rendre(dt){
     /* un temps de recharge qui remonte d'un coup : la créature vient d'attaquer */
     if(m.cd>(m.__cdp||0)+0.15){ m.__atk=0.38; m.__fracas=false; }
     m.__cdp=m.cd; if(m.__atk>0) m.__atk-=DT;
-    const fig=prendre();
+    const fig=prendre(especeMob(m));
     poser(fig,m,(m.vole||d.vole)?'vol':L[0],L[1],taille,
       {arme:L[2]||null,attaque:-1,alt:m.alt||0,flash:m.flash,pose:poseMob(m)},DT);
     /* figée par le givre : un bloc de glace l'enferme */
@@ -11599,10 +11857,11 @@ function rendre(dt){
   for(let k=cadavres.length-1;k>=0;k--){
     const c=cadavres[k]; c.temps+=DT;
     if(c.temps>2.4){ cadavres.splice(k,1); continue; }
-    const d=J.HOSTILES[c.t]||{}, L=c.hostile?(LOOK[c.t]||LOOK.defaut):['bete',{corps:nomCouleur(c.coul,'#8a6a44'),jambes:'#5a4630',chef:'#6a5034',yeux:'#111111'}];
+    const kind=c.hostile?especeMob({t:c.t,vole:c.vole}):especeBete({t:c.t,vole:c.vole});
+    const d=J.HOSTILES[c.t]||{}, L=c.hostile?(LOOK[c.t]||LOOK.defaut):['bete',LOOK_BETE[kind]||LOOK_BETE.loup];
     const forme=c.vole?'vol':L[0], taille=((d.r||c.r||10)/10)*(d.taille||1)*(d.boss?1.3:1);
     const alt=c.vole?c.alt*Math.max(0,1-c.temps/0.4):0;
-    const fig=prendre();
+    const fig=prendre(kind);
     poser(fig,c,forme,Object.assign({},L[1],{yeux:'#222222',lueur:0}),taille,{alt:alt,flash:0},DT);
     const chute=Math.min(1,c.temps/0.38);
     fig.rotation.z=c.cote*chute*chute*1.5;
@@ -11612,20 +11871,20 @@ function rendre(dt){
   for(let k=nBloc;k<blocs.length;k++) blocs[k].visible=false;
   (S.betes||[]).forEach(function(b){
     if(!dansRayon(b)) return;
-    const c=nomCouleur(b.coul||b.c,'#8a6a44');
-    poser(prendre(),b,b.vole?'vol':'bete',{corps:c,jambes:'#5a4630',chef:'#6a5034',yeux:'#111111'},
+    const kind=especeBete(b);
+    poser(prendre(kind),b,b.vole?'vol':'bete',LOOK_BETE[kind]||LOOK_BETE.loup,
       ((b.r||10)/10),{alt:b.alt||0,flash:b.flash},DT);
   });
   (S.pnj||[]).forEach(function(p){
     if(!dansRayon(p)) return;
     const L=lookDePnj(p);
-    poser(prendre(),p,'bipede',L.look,1,{arme:L.arme,attaque:-1,flash:p.flash},DT);
+    poser(prendre('humain'),p,'bipede',L.look,/enfant/i.test(p.role||'')?0.66:1,{arme:L.arme,attaque:-1,flash:p.flash},DT);
   });
   (S.convois||[]).forEach(function(c){ if(c.x===undefined||!dansRayon(c)) return;
-    poser(prendre(),c,'objet',{corps:'#7a5433',peau:'#c8b48a',chef:'#3e2c1c'},1.1,{flash:c.flash},DT); });
+    poser(prendre('objet'),c,'objet',{corps:'#7a5433',peau:'#c8b48a',chef:'#3e2c1c'},1.1,{flash:c.flash},DT); });
   (S.navires||[]).forEach(function(c){ if(c.x===undefined||!dansRayon(c)) return;
-    poser(prendre(),c,'objet',{corps:'#5a3c24',peau:'#e0d6bc',chef:'#3e2c1c'},1.8,{flash:c.flash},DT); });
-  for(let k=nPool;k<pool.length;k++) pool[k].visible=false;
+    poser(prendre('objet'),c,'objet',{corps:'#5a3c24',peau:'#e0d6bc',chef:'#3e2c1c'},1.8,{flash:c.flash},DT); });
+  finFigs();
 
   /* flèches et particules */
   nPt=0; nFle=0; nOrbe=0; let orbeProche=null, dOrbe=1e9;
@@ -11736,7 +11995,9 @@ window.addEventListener('keydown',function(e){
 });
 const ast=document.getElementById('astuce');
 if(ast) ast.insertAdjacentHTML('beforeend','<br><kbd>V</kbd> vue 2D/3D · <kbd>molette</kbd> zoom<br><kbd>clic droit</kbd> glisser : tourner la vue');
-vue.meteo=meteo; vue.evenement=evenement;   /* pour forcer un temps en test : __vue3d.meteo.type='orage' */
+vue.meteo=meteo; vue.evenement=evenement;
+/* réglages de caméra accessibles (tests, captures) */
+vue.camera=function(d,inclinaison,tour){ if(d!=null) distCible=d; if(inclinaison!=null) tangCible=inclinaison; if(tour!=null) yawCible=tour; };   /* pour forcer un temps en test : __vue3d.meteo.type='orage' */
 window.__vue3d=vue; appliquer();
 })();
 </script>
