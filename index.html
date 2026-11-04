@@ -8052,6 +8052,8 @@ function majeur(dt){
   if(touches.has('left')) dx-=1;
   if(touches.has('right')) dx+=1;
   if(joy.actif){ dx+=joy.x; dy+=joy.y; }
+  /* vue 3D orientée : « haut » veut dire « vers le fond de l'écran », pas « vers le nord » */
+  if(window.__vue3d&&window.__vue3d.actif&&window.__vue3d.yaw){ const r=window.__vue3d.tourner(dx,dy); dx=r.x; dy=r.y; }
   /* --- état de combat : animation, souffle, essence, effets --- */
   const an=j.anim;
   an.t+=dt;
@@ -9293,6 +9295,7 @@ function toucheDir(){
   if(touches.has('left')) x-=1;
   if(touches.has('right')) x+=1;
   if(joy.actif){ x+=joy.x; y+=joy.y; }
+  if(window.__vue3d&&window.__vue3d.actif&&window.__vue3d.yaw){ const r=window.__vue3d.tourner(x,y); x=r.x; y=r.y; }
   return {x:x,y:y,l:Math.hypot(x,y)};
 }
 
@@ -9300,6 +9303,8 @@ cv.addEventListener('pointerdown',function(e){
   if(enPause||!S||S.fini) return;
   if(e.pointerType==='touch') return;
   const r=cv.getBoundingClientRect();
+  /* en 3D, le clic droit et la molette servent à tourner la caméra : seul le clic gauche tire */
+  if(window.__vue3d&&window.__vue3d.actif&&e.button!==0) return;
   const p3=(window.__vue3d&&window.__vue3d.actif)?window.__vue3d.vise(e.clientX,e.clientY):null;
   if(p3) tirer(p3.x,p3.y);
   else tirer(camx+(e.clientX-r.left), camy+(e.clientY-r.top));
@@ -10139,7 +10144,7 @@ function construireDecor(){
     if(ti===B.CHEMIN||ti===B.PAVE) solRoute(x,y,i,t,vo);
     /* herbe haute : seulement près du joueur, sur les cases libres */
     if(!o&&HERBE_BIOME[ti]&&Math.abs(x-px)<=17&&Math.abs(y-pz)<=15){
-      const nb=DENS_HERBE[ti];
+      const nb=Math.round(DENS_HERBE[ti]*DENS_MULT);
       cTmp.set(HERBE_BIOME[ti]); const teinte=cTmp.clone();
       for(let n=0;n<nb;n++){
         const hx=((v*(n+3)*41)%97)/97, hz=((v*(n+5)*59+n*31)%89)/89;
@@ -10626,12 +10631,289 @@ function fleche(){
   const f=fleches[nFle++]; f.visible=true; return f;
 }
 
+/* ---------- météo et petite faune ----------
+   Purement visuel : le temps qu'il fait ne change pas les règles du jeu. */
+function sprite(dessin){ const c=document.createElement('canvas'); c.width=c.height=32; dessin(c.getContext('2d')); const t=new T3.CanvasTexture(c); return t; }
+const texRond=sprite(function(g){ const r=g.createRadialGradient(16,16,0,16,16,16); r.addColorStop(0,'rgba(255,255,255,1)'); r.addColorStop(0.4,'rgba(255,255,255,.8)'); r.addColorStop(1,'rgba(255,255,255,0)'); g.fillStyle=r; g.fillRect(0,0,32,32); });
+const texFeuille=sprite(function(g){ g.fillStyle='#fff'; g.beginPath(); g.ellipse(16,16,13,7,0.6,0,6.2832); g.fill(); g.strokeStyle='rgba(0,0,0,.35)'; g.lineWidth=1.5; g.beginPath(); g.moveTo(6,24); g.lineTo(26,8); g.stroke(); });
+const BOITE=34, HAUT=16;
+function nuage(n,mat,init){
+  const pos=new Float32Array(n*3), col=new Float32Array(n*3).fill(1);
+  const g=new T3.BufferGeometry(); g.setAttribute('position',new T3.BufferAttribute(pos,3)); g.setAttribute('color',new T3.BufferAttribute(col,3));
+  const p=new T3.Points(g,mat); p.frustumCulled=false; p.visible=false; scene.add(p);
+  const d={p:p,pos:pos,col:col,n:n,ext:new Float32Array(n*4)};
+  for(let k=0;k<n;k++) init(d,k,true);
+  d.loc=Float32Array.from(pos);   /* positions autour du joueur ; pos reçoit les positions dans le monde */
+  return d;
+}
+/* pluie : des traits obliques */
+const NP=1400;
+const geoPluie=new T3.BufferGeometry(), posPluie=new Float32Array(NP*6), gouttes=new Float32Array(NP*3);
+geoPluie.setAttribute('position',new T3.BufferAttribute(posPluie,3));
+const pluie=new T3.LineSegments(geoPluie,new T3.LineBasicMaterial({color:0xaabbcc,transparent:true,opacity:0.5,depthWrite:false}));
+pluie.frustumCulled=false; pluie.visible=false; scene.add(pluie);
+for(let k=0;k<NP;k++){ gouttes[k*3]=(Math.random()-.5)*BOITE; gouttes[k*3+1]=Math.random()*HAUT; gouttes[k*3+2]=(Math.random()-.5)*BOITE; }
+/* éclaboussures au sol */
+const eclab=nuage(240,new T3.PointsMaterial({size:0.12,map:texRond,transparent:true,opacity:0.7,depthWrite:false,color:0xcfdce6}),
+  function(d,k){ d.pos[k*3+1]=-999; d.ext[k*4]=0; });
+let iEclab=0;
+/* neige */
+const flocons=nuage(1500,new T3.PointsMaterial({size:0.16,map:texRond,transparent:true,opacity:0.9,depthWrite:false,color:0xffffff}),
+  function(d,k){ d.pos[k*3]=(Math.random()-.5)*BOITE; d.pos[k*3+1]=Math.random()*HAUT; d.pos[k*3+2]=(Math.random()-.5)*BOITE; d.ext[k*4]=Math.random()*6.28; d.ext[k*4+1]=0.8+Math.random()*0.9; });
+/* lucioles */
+const lucioles=nuage(70,new T3.PointsMaterial({size:0.22,map:texRond,transparent:true,depthWrite:false,blending:T3.AdditiveBlending,vertexColors:true}),
+  function(d,k){ d.pos[k*3]=(Math.random()-.5)*26; d.pos[k*3+1]=0.4+Math.random()*1.6; d.pos[k*3+2]=(Math.random()-.5)*26; d.ext[k*4]=Math.random()*6.28; d.ext[k*4+1]=0.5+Math.random(); d.ext[k*4+2]=Math.random()*6.28; });
+/* feuilles qui tombent */
+const COUL_FEUILLES=[[0.85,0.5,0.18],[0.9,0.65,0.2],[0.75,0.35,0.15],[0.45,0.6,0.25]];
+const feuilles=nuage(90,new T3.PointsMaterial({size:0.2,map:texFeuille,transparent:true,alphaTest:0.3,vertexColors:true}),
+  function(d,k){ d.pos[k*3]=(Math.random()-.5)*BOITE; d.pos[k*3+1]=Math.random()*6; d.pos[k*3+2]=(Math.random()-.5)*BOITE; d.ext[k*4]=Math.random()*6.28; d.ext[k*4+1]=0.4+Math.random()*0.5;
+    const c=COUL_FEUILLES[k%4]; d.col[k*3]=c[0]; d.col[k*3+1]=c[1]; d.col[k*3+2]=c[2]; });
+/* ombres de nuages : un plan invisible qui ne fait que porter ombre */
+const texNuage=(function(){
+  const c=document.createElement('canvas'); c.width=c.height=256; const g=c.getContext('2d');
+  g.fillStyle='#000'; g.fillRect(0,0,256,256);
+  const r=rngT(4242);
+  for(let k=0;k<70;k++){ const x=r()*256,y=r()*256,rr=18+r()*46;
+    for(let dx=-1;dx<=1;dx++) for(let dy=-1;dy<=1;dy++){
+      const gr=g.createRadialGradient(x+dx*256,y+dy*256,0,x+dx*256,y+dy*256,rr); gr.addColorStop(0,'rgba(255,255,255,.55)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+      g.fillStyle=gr; g.fillRect(x+dx*256-rr,y+dy*256-rr,rr*2,rr*2); } }
+  const t=new T3.CanvasTexture(c); t.wrapS=t.wrapT=T3.RepeatWrapping; t.repeat.set(2,2); return t;
+})();
+const plafond=new T3.Mesh(new T3.PlaneGeometry(120,120),
+  new T3.MeshBasicMaterial({colorWrite:false,depthWrite:false,transparent:true,alphaMap:texNuage,alphaTest:0.5}));
+plafond.rotation.x=-Math.PI/2; plafond.castShadow=true; plafond.receiveShadow=false; plafond.visible=false;
+/* le seuil reste fixe (le changer recompilerait le shader) : c'est l'opacité qui règle la couverture */
+plafond.customDepthMaterial=new T3.MeshDepthMaterial({depthPacking:T3.RGBADepthPacking,alphaMap:texNuage,alphaTest:0.5});
+scene.add(plafond);
+/* éclair : un voile blanc très bref sur l'écran */
+const eclairDiv=document.createElement('div');
+eclairDiv.style.cssText='position:absolute;inset:0;pointer-events:none;z-index:1;opacity:0;background:#dfe8ff;mix-blend-mode:screen';
+c3.after(eclairDiv);
+
+const METEOS=[['clair',5],['nuageux',3],['pluie',2],['orage',1],['brouillard',1.2]];
+const meteo={type:'clair',t:0,duree:70,force:0,mouille:0,eclair:0,prochainEclair:8,derive:0};
+function tirerMeteo(){
+  let tot=0; METEOS.forEach(function(m){ tot+=m[1]; });
+  let r=Math.random()*tot;
+  for(const m of METEOS){ r-=m[1]; if(r<=0) return m[0]; }
+  return 'clair';
+}
+const fogPluie=new T3.Color(0x7d8890), fogBrume=new T3.Color(0xc8d0d0), tmpF=new T3.Color();
+let derniereMeteo=null;
+function majMeteo(S,dt,X,Z,hJ,nn,grotte){
+  /* le temps change toutes les une à deux minutes */
+  meteo.t+=dt;
+  if(meteo.t>meteo.duree){ meteo.t=0; meteo.duree=55+Math.random()*70;
+    const avant=meteo.type; meteo.type=tirerMeteo(); if(meteo.type!==avant) meteo.force=0; }
+  const humide=meteo.type==='pluie'||meteo.type==='orage';
+  meteo.force=Math.min(1,meteo.force+dt/8);
+  const fin=Math.max(0,Math.min(1,(meteo.duree-meteo.t)/8));      /* s'estompe avant de changer */
+  const f=meteo.force*fin;
+  const bio=J.tuiles[(Z|0)*W+(X|0)];
+  const enNeige=bio===B.NEIGE;
+  const tombe=humide&&!grotte, neige=tombe&&enNeige, pleut=tombe&&!enNeige;
+  /* annonce discrète quand le temps tourne */
+  const nom=grotte?null:(neige?'neige':meteo.type);
+  if(nom!==derniereMeteo&&f>0.5){ derniereMeteo=nom;
+    const msg={pluie:'Il se met à pleuvoir.',orage:'L’orage gronde au loin.',neige:'La neige tombe.',brouillard:'Une brume épaisse se lève.'}[nom];
+    if(msg) S.flots.push({x:S.j.x,y:S.j.y-40,txt:msg,c:'#c8d8e8',v:2.5}); }
+
+  /* --- lumière et brouillard --- */
+  if(!grotte){
+    if(meteo.type==='nuageux') soleil.intensity*=1-0.35*f;
+    if(humide){ soleil.intensity*=1-0.75*f; hemi.intensity*=1-0.3*f;
+      tmpF.copy(fogPluie).multiplyScalar(1-nn*0.85); scene.fog.color.lerp(tmpF,0.6*f);
+      scene.fog.near*=1-0.35*f; scene.fog.far*=1-0.3*f; }
+    /* brouillard, et brume du petit matin */
+    const p=S.t%(JOUR+NUIT), matin=p<JOUR?Math.max(0,1-p/(JOUR*0.18)):0;
+    const brume=Math.max(meteo.type==='brouillard'?f:0,matin*0.7);
+    if(brume>0){ tmpF.copy(fogBrume).multiplyScalar(1-nn*0.85); scene.fog.color.lerp(tmpF,brume*0.8);
+      scene.fog.near+=(2.5-scene.fog.near)*brume; scene.fog.far+=(17-scene.fog.far)*brume; }
+    if(enNeige&&!humide){ scene.fog.color.lerp(tmpF.set(0xe8eef4).multiplyScalar(1-nn*0.85),0.2); }
+    rend.setClearColor(scene.fog.color);
+  }
+  /* sol mouillé qui brille, puis sèche lentement */
+  meteo.mouille+=((pleut?f:0)-meteo.mouille)*dt*(pleut?0.25:0.06);
+  matSol.roughness=0.95-0.5*meteo.mouille;
+  eau.material.roughness=0.18-0.1*meteo.mouille;
+
+  /* éclairs */
+  meteo.eclair=Math.max(0,meteo.eclair-dt*5);
+  if(meteo.type==='orage'&&!grotte&&f>0.6){
+    meteo.prochainEclair-=dt;
+    if(meteo.prochainEclair<=0){ meteo.prochainEclair=5+Math.random()*10; meteo.eclair=1;
+      setTimeout(function(){ meteo.eclair=Math.max(meteo.eclair,0.7); },120); }
+  }
+  hemi.intensity+=meteo.eclair*2.2;
+  eclairDiv.style.opacity=(meteo.eclair*0.35).toFixed(3);
+
+  /* ombres de nuages */
+  const couvert=grotte?0:(meteo.type==='nuageux'?0.55:humide?0.8:meteo.type==='clair'?0.22:0.4)*f+0.12;
+  plafond.visible=!grotte&&nn<0.8&&qualite<2;
+  meteo.derive+=dt*0.006;
+  plafond.position.set(X,hJ+13,Z);
+  texNuage.offset.set(X/60+meteo.derive,-Z/60+meteo.derive*0.4);
+  plafond.material.opacity=plafond.customDepthMaterial.opacity=0.7+couvert*1.6;
+
+  /* --- pluie --- */
+  pluie.visible=pleut&&f>0.02;
+  if(pluie.visible){
+    pluie.material.opacity=0.45*f;
+    const vent=meteo.type==='orage'?4:1.8, vit=meteo.type==='orage'?26:20, nAct=Math.floor(NP*(meteo.type==='orage'?1:0.7)*f);
+    for(let k=0;k<NP;k++){
+      const o=k*3, o6=k*6;
+      if(k>=nAct){ posPluie[o6+1]=posPluie[o6+4]=-999; continue; }
+      gouttes[o]+=vent*dt; gouttes[o+1]-=vit*dt;
+      let wx=X+gouttes[o], wz=Z+gouttes[o+2];
+      const sol=solEn(wx,wz);
+      if(hJ+gouttes[o+1]-4<sol){
+        if(Math.random()<0.35){ const e=iEclab++%eclab.n; eclab.pos[e*3]=wx; eclab.pos[e*3+1]=Math.max(sol,-0.18)+0.03; eclab.pos[e*3+2]=wz; eclab.ext[e*4]=0.18; }
+        gouttes[o]=(Math.random()-.5)*BOITE; gouttes[o+1]=HAUT-Math.random()*2; gouttes[o+2]=(Math.random()-.5)*BOITE;
+        wx=X+gouttes[o]; wz=Z+gouttes[o+2];
+      }
+      const y=hJ+gouttes[o+1]-4;
+      posPluie[o6]=wx; posPluie[o6+1]=y; posPluie[o6+2]=wz;
+      posPluie[o6+3]=wx-vent*0.035; posPluie[o6+4]=y+vit*0.035; posPluie[o6+5]=wz;
+    }
+    geoPluie.attributes.position.needsUpdate=true;
+  }
+  eclab.p.visible=pluie.visible;
+  if(eclab.p.visible){
+    for(let k=0;k<eclab.n;k++){ if(eclab.ext[k*4]>0){ eclab.ext[k*4]-=dt; if(eclab.ext[k*4]<=0) eclab.pos[k*3+1]=-999; } }
+    eclab.p.geometry.attributes.position.needsUpdate=true;
+  }
+  /* --- neige --- */
+  flocons.p.visible=neige&&f>0.02;
+  if(flocons.p.visible){
+    flocons.p.material.opacity=0.9*f;
+    for(let k=0;k<flocons.n;k++){
+      const o=k*3; flocons.ext[k*4]+=dt;
+      flocons.loc[o+1]-=flocons.ext[k*4+1]*dt;
+      const ox=Math.sin(flocons.ext[k*4]*1.3)*0.3, oz=Math.cos(flocons.ext[k*4])*0.3;
+      if(flocons.loc[o+1]<0){ flocons.loc[o]=(Math.random()-.5)*BOITE; flocons.loc[o+1]=HAUT; flocons.loc[o+2]=(Math.random()-.5)*BOITE; }
+      flocons.ext[k*4+2]=ox; flocons.ext[k*4+3]=oz;
+    }
+    /* positions monde : on suit le joueur */
+    const a=flocons.p.geometry.attributes.position.array;
+    for(let k=0;k<flocons.n;k++){ const o=k*3; a[o]=X+flocons.loc[o]+flocons.ext[k*4+2]; a[o+1]=hJ-3+flocons.loc[o+1]; a[o+2]=Z+flocons.loc[o+2]+flocons.ext[k*4+3]; }
+    flocons.p.geometry.attributes.position.needsUpdate=true;
+  }
+  /* --- lucioles : la nuit, dans l'herbe et les sous-bois --- */
+  const nuitVerte=!grotte&&nn>0.55&&(bio===3||bio===4||bio===5||bio===6)&&!humide;
+  lucioles.p.visible=nuitVerte;
+  if(nuitVerte){
+    const a=lucioles.p.geometry.attributes.position.array, c=lucioles.p.geometry.attributes.color.array, tt=uVent.value;
+    for(let k=0;k<lucioles.n;k++){
+      const o=k*3, e=k*4; lucioles.ext[e]+=dt*lucioles.ext[e+1];
+      let lx=lucioles.loc[o]+Math.sin(lucioles.ext[e])*0.8, lz=lucioles.loc[o+2]+Math.cos(lucioles.ext[e]*0.7)*0.8;
+      /* elles restent autour du joueur : celles qui sortent du cercle repassent de l'autre côté */
+      let wx=Math.round((X-lx)/26)*26+lx, wz=Math.round((Z-lz)/26)*26+lz;
+      a[o]=wx; a[o+1]=solEn(wx,wz)+lucioles.loc[o+1]+Math.sin(tt*1.7+k)*0.2; a[o+2]=wz;
+      const lum=Math.max(0,Math.sin(tt*2.2+lucioles.ext[e+2]))**3*(nn-0.55)/0.35;
+      c[o]=0.8*lum; c[o+1]=1.0*lum; c[o+2]=0.35*lum;
+    }
+    lucioles.p.geometry.attributes.position.needsUpdate=true; lucioles.p.geometry.attributes.color.needsUpdate=true;
+  }
+  /* --- feuilles qui tombent en forêt, le jour --- */
+  const automne=!grotte&&nn<0.6&&(bio===4||bio===3)&&!enNeige;
+  feuilles.p.visible=automne;
+  if(automne){
+    const a=feuilles.p.geometry.attributes.position.array, vent=humide?2.5:0.8;
+    for(let k=0;k<feuilles.n;k++){
+      const o=k*3, e=k*4; feuilles.ext[e]+=dt*2;
+      feuilles.loc[o+1]-=feuilles.ext[e+1]*dt;
+      feuilles.loc[o]+=(Math.sin(feuilles.ext[e])*0.8+vent)*dt;
+      feuilles.loc[o+2]+=Math.cos(feuilles.ext[e]*0.8)*0.5*dt;
+      if(feuilles.loc[o+1]<0||Math.abs(feuilles.loc[o])>BOITE/2){ feuilles.loc[o]=(Math.random()-.5)*BOITE; feuilles.loc[o+1]=3+Math.random()*3; feuilles.loc[o+2]=(Math.random()-.5)*BOITE; }
+      const wx=X+feuilles.loc[o], wz=Z+feuilles.loc[o+2];
+      a[o]=wx; a[o+1]=solEn(wx,wz)+feuilles.loc[o+1]; a[o+2]=wz;
+    }
+    feuilles.p.geometry.attributes.position.needsUpdate=true;
+  }
+}
+
+/* ---------- qualité automatique ----------
+   Le jeu mesure lui-même sa fluidité et s'allège s'il rame :
+   0 = complet, 1 = résolution et ombres réduites, 2 = sans ombres ni herbe haute. */
+const tactileEcran=window.matchMedia('(pointer: coarse)').matches;
+let qualite=0, tMesure=0, nMesure=0, sMesure=0, derFrame=performance.now(), calmeQ=0;
+function appliquerQualite(q){
+  qualite=q;
+  const dpr=window.devicePixelRatio||1;
+  rend.setPixelRatio(q===0?Math.min(dpr,1.5):q===1?1:0.75);
+  if(soleil.shadow.map){ soleil.shadow.map.dispose(); soleil.shadow.map=null; }
+  soleil.shadow.mapSize.set(q===0?2048:1024,q===0?2048:1024);
+  soleil.castShadow=q<2;
+  DENS_MULT=q===2?0:q===1?0.5:1;
+  derTx=-1; redim();
+}
+function mesurerQualite(){
+  const now=performance.now(), d=(now-derFrame)/1000; derFrame=now;
+  if(d>0.5) return;                       /* onglet en arrière-plan : on ne compte pas */
+  sMesure+=d; nMesure++; tMesure+=d; calmeQ+=d;
+  if(tMesure>=3){
+    const moy=sMesure/nMesure; sMesure=0; nMesure=0; tMesure=0;
+    if(moy>1/32&&qualite<2&&calmeQ>4){ appliquerQualite(qualite+1); calmeQ=0; }
+  }
+}
+let DENS_MULT=1;
+if(tactileEcran) setTimeout(function(){ appliquerQualite(1); },0);
+
 /* ---------- caméra ---------- */
-let dist=15;
+let dist=15, distCible=15;
+/* orientation : yaw = tour autour du joueur, tang = inclinaison (0.95 ≈ vue plongeante) */
+let yaw=0, yawCible=0, tang=0.95, tangCible=0.95;
 stage.addEventListener('wheel',function(e){
   if(!vue.actif) return;
-  dist=Math.max(7,Math.min(32,dist+(e.deltaY>0?1.5:-1.5)));
+  distCible=Math.max(6,Math.min(32,distCible+(e.deltaY>0?1.5:-1.5)));
 },{passive:true});
+/* clic droit (ou molette enfoncée) + glisser : tourner la caméra ; clic molette seul : recentrer */
+let orbite=null;
+stage.addEventListener('pointerdown',function(e){
+  if(!vue.actif||e.pointerType==='touch') return;
+  if(e.button===2||e.button===1){
+    orbite={x:e.clientX,y:e.clientY,bouge:false,b:e.button};
+    try{ stage.setPointerCapture(e.pointerId); }catch(_){}
+  }
+},true);
+stage.addEventListener('pointermove',function(e){
+  if(!orbite) return;
+  const dx=e.clientX-orbite.x, dy=e.clientY-orbite.y;
+  if(Math.abs(dx)+Math.abs(dy)>2) orbite.bouge=true;
+  orbite.x=e.clientX; orbite.y=e.clientY;
+  yawCible-=dx*0.008;
+  tangCible=Math.max(0.45,Math.min(1.35,tangCible+dy*0.005));
+});
+stage.addEventListener('pointerup',function(e){
+  if(!orbite) return;
+  if(orbite.b===1&&!orbite.bouge){ yawCible=Math.round(yawCible/(Math.PI*2))*Math.PI*2; tangCible=0.95; }
+  orbite=null;
+});
+stage.addEventListener('contextmenu',function(e){ if(vue.actif) e.preventDefault(); });
+/* sur écran tactile : deux doigts hors du joystick et des boutons → tourner et pincer pour zoomer */
+const doigts=new Map(); let geste=null;
+function horsCommandes(t){ return !(t.closest&&(t.closest('#manche')||t.closest('#touches')||t.closest('button'))); }
+stage.addEventListener('pointerdown',function(e){
+  if(!vue.actif||e.pointerType!=='touch'||!horsCommandes(e.target)) return;
+  doigts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(doigts.size===2){
+    const p=[...doigts.values()];
+    geste={a:Math.atan2(p[1].y-p[0].y,p[1].x-p[0].x),d:Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y),yaw:yawCible,dist:distCible};
+  }
+},true);
+stage.addEventListener('pointermove',function(e){
+  if(!doigts.has(e.pointerId)) return;
+  doigts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(geste&&doigts.size===2){
+    const p=[...doigts.values()];
+    const a=Math.atan2(p[1].y-p[0].y,p[1].x-p[0].x), d=Math.hypot(p[1].x-p[0].x,p[1].y-p[0].y);
+    yawCible=geste.yaw+(a-geste.a);
+    distCible=Math.max(6,Math.min(32,geste.dist*geste.d/Math.max(20,d)));
+  }
+},true);
+function finDoigt(e){ doigts.delete(e.pointerId); if(doigts.size<2) geste=null; }
+stage.addEventListener('pointerup',finDoigt,true);
+stage.addEventListener('pointercancel',finDoigt,true);
 const ray=new T3.Raycaster(), plan=new T3.Plane(new T3.Vector3(0,1,0),0), v2=new T3.Vector2(), vHit=new T3.Vector3();
 
 /* ---------- ciel ---------- */
@@ -10653,6 +10935,7 @@ let EXPO=0.72;
 let tCoul=0;
 function rendre(dt){
   const S=J.S; if(!S) return;
+  mesurerQualite();
   if(J.tuiles!==refTuiles) { construireSol(); derTx=-1; }
   tCoul+=dt||0.016; tDecor+=dt||0.016;
   if(tCoul>2){ tCoul=0; majCouleursSol(); }
@@ -10787,11 +11070,19 @@ function rendre(dt){
   for(let k=nPt;k<petits.length;k++) petits[k].visible=false;
   majEffets(S,DT,X,Z,hJ);
 
-  /* caméra : vue plongeante qui suit le joueur, axes alignés sur ZQSD */
+  /* caméra : suit le joueur, tourne et s'incline en douceur vers la position voulue */
   const sec=j.secousse>0?j.secousse*0.25:0;
-  const ang=0.95;
-  cam.position.set(X+(Math.random()-.5)*sec, hJ+Math.sin(ang)*dist+(Math.random()-.5)*sec, Z+Math.cos(ang)*dist);
+  const lis=Math.min(1,DT*10);
+  yaw+=(yawCible-yaw)*lis; tang+=(tangCible-tang)*lis; dist+=(distCible-dist)*lis;
+  vue.yaw=Math.abs(yaw)>0.001?yaw:0;
+  const horiz=Math.cos(tang)*dist;
+  let camY=hJ+Math.sin(tang)*dist;
+  const cx=X+Math.sin(yaw)*horiz, cz=Z+Math.cos(yaw)*horiz;
+  /* la caméra ne passe pas sous une falaise */
+  camY=Math.max(camY,solEn(cx,cz)+1.2);
+  cam.position.set(cx+(Math.random()-.5)*sec, camY+(Math.random()-.5)*sec, cz+(Math.random()-.5)*sec*0.5);
   cam.lookAt(X,hJ+0.6,Z);
+  majMeteo(S,DT,X,Z,hJ,nn,grotte);
   rend.render(scene,cam);
   majFlots(S);
 }
@@ -10831,7 +11122,9 @@ function vise(cx,cy){
   return {x:vHit.x*TS,y:vHit.z*TS};
 }
 
-const vue={actif:true,rendre:rendre,vise:vise};
+const vue={actif:true,rendre:rendre,vise:vise,yaw:0,
+  /* direction de l'écran → direction du monde, selon l'orientation de la caméra */
+  tourner:function(x,y){ const c=Math.cos(vue.yaw), s=Math.sin(vue.yaw); return {x:x*c+y*s, y:-x*s+y*c}; }};
 function appliquer(){
   c3.style.display=vue.actif?'block':'none';
   coucheFlots.style.display=vue.actif?'block':'none';
@@ -10848,7 +11141,8 @@ window.addEventListener('keydown',function(e){
   if(e.code==='KeyV'&&!e.repeat&&!(e.target&&/INPUT|TEXTAREA/.test(e.target.tagName))){ vue.actif=!vue.actif; appliquer(); }
 });
 const ast=document.getElementById('astuce');
-if(ast) ast.insertAdjacentHTML('beforeend','<br><kbd>V</kbd> vue 2D/3D · <kbd>molette</kbd> zoom');
+if(ast) ast.insertAdjacentHTML('beforeend','<br><kbd>V</kbd> vue 2D/3D · <kbd>molette</kbd> zoom<br><kbd>clic droit</kbd> glisser : tourner la vue');
+vue.meteo=meteo;   /* pour forcer un temps en test : __vue3d.meteo.type='orage' */
 window.__vue3d=vue; appliquer();
 })();
 </script>

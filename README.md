@@ -26,6 +26,8 @@ au premier chargement pour récupérer Three.js et les polices).
 | F | manger |
 | V | basculer entre la vue 3D et la vue 2D |
 | molette | zoom |
+| clic droit + glisser | tourner la caméra (clic molette : recentrer) |
+| deux doigts (mobile) | tourner et zoomer |
 
 ## Ce que fait la vue 3D
 
@@ -34,4 +36,7 @@ au premier chargement pour récupérer Three.js et les polices).
 - maisons à colombages, toits de tuiles, fenêtres qui s'allument la nuit ;
 - personnages articulés et animés, habits texturés ;
 - soleil qui traverse le ciel, couchant, lune, brouillard teinté selon le biome ;
-- effets de combat : arcs de taille, étincelles, ondes de choc, flèches en 3D.
+- effets de combat : arcs de taille, étincelles, ondes de choc, flèches en 3D ;
+- météo changeante : pluie et sol mouillé, orages et éclairs, neige en montagne, brouillard,
+  brume du matin, ombres de nuages ; lucioles la nuit, feuilles qui tombent ;
+- qualité automatique : le rendu s'allège tout seul sur les appareils plus modestes.
