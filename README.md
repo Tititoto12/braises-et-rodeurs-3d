@@ -39,4 +39,12 @@ au premier chargement pour récupérer Three.js et les polices).
 - effets de combat : arcs de taille, étincelles, ondes de choc, flèches en 3D ;
 - météo changeante : pluie et sol mouillé, orages et éclairs, neige en montagne, brouillard,
   brume du matin, ombres de nuages ; lucioles la nuit, feuilles qui tombent ;
-- qualité automatique : le rendu s'allège tout seul sur les appareils plus modestes.
+- qualité automatique : le rendu s'allège tout seul sur les appareils plus modestes ;
+- animations : combos à l'épée (taille, revers, coup final qui fracasse le sol), estoc à la lance,
+  roulade, parade, recul quand on est touché ; ennemis qui se fendent, broyeur qui écrase le sol,
+  décocheur qui bande son arc, morts qui basculent puis s'enfoncent ;
+- pouvoirs : tourbillon de la bourrasque, bille d'arcane lumineuse, cône de flammes, silhouettes
+  du pas de l'ombre, cercle de pics de glace et ennemis pris dans la glace ;
+- récolte : les arbres tremblent puis tombent, les rochers éclatent, les baies sautent vers toi,
+  les coffres crachent leurs pièces ; les constructions sortent de terre ; les objets fabriqués
+  apparaissent au-dessus de la tête.
