@@ -528,7 +528,7 @@ const FEU_LUM=196, TORCHE_LUM=152, AMBIANT=58, FEU_REPOUSSE=150;
 const EAU=0, GUE=1, SABLE=2, PRAIRIE=3, FORET=4, PINEDE=5, MARAIS=6, ROCAILLE=7, NEIGE=8, ROCHE=9, GROTTE=10, CHEMIN=11, PAVE=12, PONTON=13;
 const NOMS_BIOME={0:'Eau profonde',1:'Gué',2:'Plage',3:'Prairie',4:'Forêt',5:'Pinède',6:'Marais',7:'Rocaille',8:'Neige',9:'Falaise',10:'Grotte',11:'Chemin',12:'Place du village',13:'Cité flottante'};
 /* vitesse de déplacement par biome */
-const VIT_BIOME={0:0.5,1:0.45,2:0.92,3:1,4:1,5:0.95,6:0.62,7:0.9,8:0.78,9:1,10:0.9,11:1.28,12:1.15};
+const VIT_BIOME={0:0.5,1:0.45,2:0.92,3:1,4:1,5:0.95,6:0.62,7:0.9,8:0.78,9:0.5,10:0.9,11:1.28,12:1.15};
 /* biomes où l'on peut marcher */
 function marchable(t){ return t!==ROCHE && t!==EAU; }
 
@@ -1866,10 +1866,13 @@ function poserStructures(seed){
   }
 }
 
+/* Le joueur peut escalader la montagne (lentement) ; les créatures, elles, restent
+   au pied des falaises. grimpeur ne vaut vrai que pendant les déplacements du joueur. */
+let grimpeur=false;
 function dur(tx,ty,radeau){
   if(tx<0||ty<0||tx>=W||ty>=H) return true;
   const i=ty*W+tx, t=tuiles[i], o=objets[i];
-  if(t===ROCHE) return true;
+  if(t===ROCHE) return !grimpeur;
   if(t===EAU) return !(o===PONT||radeau);
   return !!SOLIDES[o];
 }
@@ -1902,6 +1905,10 @@ function mouille(x,y,r){
    tronc au lieu de s'y coller. */
 const COIN_ECART=13, COIN_GLISSE=0.72;
 function deplace(e,dx,dy,r){
+  if(S&&e===S.j){ grimpeur=true; try{ deplaceCorps(e,dx,dy,r); } finally{ grimpeur=false; } return; }
+  deplaceCorps(e,dx,dy,r);
+}
+function deplaceCorps(e,dx,dy,r){
   if(e.vole){ e.x+=dx; e.y+=dy; e.x=Math.max(TS,Math.min((W-1)*TS,e.x)); e.y=Math.max(TS,Math.min((H-1)*TS,e.y)); return; }
   if(e.marin){
     if(dx&&mouille(e.x+dx,e.y,r)) e.x+=dx;
@@ -6087,7 +6094,8 @@ function lancerPouvoir(n){
     const pas=12, avX=j.x, avY=j.y;
     for(let k=1;k<=pas;k++){
       const nx=j.x+j.fx*(p.dist/pas), ny=j.y+j.fy*(p.dist/pas);
-      if(cogne(nx,ny,R_CORPS,j.radeau)) break;
+      grimpeur=true; const bute=cogne(nx,ny,R_CORPS,j.radeau); grimpeur=false;
+      if(bute) break;
       j.x=nx; j.y=ny;
     }
     for(let k=0;k<10;k++){
@@ -8121,6 +8129,8 @@ function majeur(dt){
 
   j.radeau=S.outils.radeau||S.outils.barque;
   const bio=biomeEn(j.x,j.y);
+  if(bio===ROCHE&&S.appris&&!S.appris.escalade){ S.appris.escalade=true;
+    note('Tu escalades la paroi. On y avance lentement, mais les bêtes ne t’y suivent pas.'); }
   /* la barque file bien plus droit qu'un radeau : le large doit rester un voyage,
      pas une punition */
   const mult=(VIT_BIOME[bio]!==undefined?VIT_BIOME[bio]:1)
@@ -11065,6 +11075,13 @@ function evenement(n,d){
 function poseJoueur(u,f,forme){
   const S=J.S, j=S.j, an=j.anim||{}, act=an.d>0&&an.t<an.d, p=act?an.t/an.d:1;
   const a=f.rotation.y; let off=0, dy=0;
+  /* sur la paroi : penché vers la roche, les mains cherchent des prises l'une après l'autre */
+  const surRoche=J.tuiles[((j.y/TS)|0)*W+((j.x/TS)|0)]===B.ROCHE;
+  if(surRoche&&!act&&(j.__vit||0)>0.05){
+    const s=Math.sin((j.__ph||0)*1.2);
+    f.rotation.x=0.38; u.brasG.rotation.x=-2.3-0.6*s; u.brasD.rotation.x=-2.3+0.6*s;
+    u.jambeG.rotation.x=-0.5-0.4*s; u.jambeD.rotation.x=-0.5+0.4*s;
+  }
   if(anim.craft&&anim.craft.t<0.9&&!act){
     /* à genoux, on martèle */
     const h=Math.sin(anim.craft.t*22);
