@@ -9704,6 +9704,8 @@ function couleurCase(i,t,coul,ob){
   const x=i%W;
   if((x>0&&ob[i-1]===O.ARBRE)||(x<W-1&&ob[i+1]===O.ARBRE)||(i>=W&&ob[i-W]===O.ARBRE)||(i<W*(H-1)&&ob[i+W]===O.ARBRE)) f*=0.92;
   let r=k[0]*f, g=k[1]*f, b=k[2]*f;
+  /* sol de grotte : terre battue et pierre, pas un trou noir */
+  if(t[i]===B.GROTTE){ r=r*1.6+0.12; g=g*1.6+0.1; b=b*1.6+0.08; }
   /* montagne : la roche s'éclaircit en montant, la neige coiffe les sommets */
   if(t[i]===B.ROCHE&&hTuile){
     const h=hTuile[i], cl=Math.max(0,Math.min(1,(h-2.4)/3.5)), ne=Math.max(0,Math.min(1,(h-4.7)/1.1));
