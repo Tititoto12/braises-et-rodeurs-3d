@@ -9507,6 +9507,13 @@ try{
 </script>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/FXAAShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
 <script>
 /* ====================== VUE 3D ======================
    Le jeu tourne exactement comme avant ; on remplace seulement le dessin.
@@ -9778,6 +9785,8 @@ function construireSol(){
     /* pentes raides plus sombres (roche nue à l'ombre des crêtes), replats plus clairs */
     const pente=Math.max(Math.abs(a-d),Math.abs(b-c),Math.abs(a-b),Math.abs(a-c));
     if(pente>0.25){ const sombre=1-Math.min(0.42,(pente-0.25)*0.38); k[0]*=sombre; k[1]*=sombre; k[2]*=sombre*1.02; }
+    if(!couleursPures||couleursPures.length!==W*H*3) couleursPures=new Float32Array(W*H*3);
+    couleursPures[i*3]=k[0]; couleursPures[i*3+1]=k[1]; couleursPures[i*3+2]=k[2];
     uvCase(t[i],vo?vo[i]:i*7,uv,i*12);
     for(let q=0;q<6;q++){
       pos[p]=v[q][0]; pos[p+1]=v[q][1]; pos[p+2]=v[q][2];
@@ -9791,9 +9800,35 @@ function construireSol(){
   g.setAttribute('normal',new T3.BufferAttribute(nor,3));
   if(terrain){ terrain.geometry.dispose(); terrain.geometry=g; }
   else { terrain=new T3.Mesh(g,matSol); terrain.receiveShadow=true; scene.add(terrain); }
+  lisserCouleurs(g.attributes.color.array);
+  majTexProfondeur();
   refTuiles=t; copieT=Uint8Array.from(t); copieC=coul.slice(); copieO=Uint8Array.from(ob);
 }
 let copieO=null;
+/* Transitions douces : chaque coin de case prend la moyenne des quatre cases qui
+   le touchent. La prairie se fond dans la forêt, le sable dans l'herbe, au lieu
+   de changer net à la frontière de la case. */
+let couleursPures=null;
+function lisserCouleurs(col){
+  if(!couleursPures) return;
+  const CW=W+1, coin=new Float32Array(CW*(H+1)*3);
+  for(let y=0;y<=H;y++) for(let x=0;x<=W;x++){
+    let r=0,g=0,b=0,n=0;
+    for(let dy=-1;dy<=0;dy++) for(let dx=-1;dx<=0;dx++){
+      const tx=x+dx, ty=y+dy; if(tx<0||ty<0||tx>=W||ty>=H) continue;
+      const o=(ty*W+tx)*3; r+=couleursPures[o]; g+=couleursPures[o+1]; b+=couleursPures[o+2]; n++;
+    }
+    const o=(y*CW+x)*3; coin[o]=r/n; coin[o+1]=g/n; coin[o+2]=b/n;
+  }
+  const ordre=[[0,0],[0,1],[1,0],[1,0],[0,1],[1,1]], MIX=0.6;
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const i=y*W+x, pr=couleursPures[i*3], pg=couleursPures[i*3+1], pb=couleursPures[i*3+2];
+    for(let q=0;q<6;q++){
+      const c=((y+ordre[q][1])*CW+x+ordre[q][0])*3, o=(i*6+q)*3;
+      col[o]=pr+(coin[c]-pr)*MIX; col[o+1]=pg+(coin[c+1]-pg)*MIX; col[o+2]=pb+(coin[c+2]-pb)*MIX;
+    }
+  }
+}
 function majCouleursSol(){
   const coul=J.couleurTuile, t=J.tuiles, ob=J.objets;
   for(let i=0;i<t.length;i++) if(t[i]!==copieT[i]){ construireSol(); return; }
@@ -9806,10 +9841,11 @@ function majCouleursSol(){
     for(let n=0;n<5;n++){
       const c=vois[n]; if(c<0||c>=t.length) continue;
       const k=couleurCase(c,t,coul,ob);
+      couleursPures[c*3]=k[0]; couleursPures[c*3+1]=k[1]; couleursPures[c*3+2]=k[2];
       for(let q=0;q<6;q++){ const o=(c*6+q)*3; col.array[o]=k[0]; col.array[o+1]=k[1]; col.array[o+2]=k[2]; }
     }
   }
-  if(chg) col.needsUpdate=true;
+  if(chg){ lisserCouleurs(col.array); col.needsUpdate=true; }
 }
 function solEn(x,z){
   if(!coins) return 0;
@@ -10122,6 +10158,216 @@ TYPE_MOD[O.COFFRE]='coffre'; TYPE_MOD[O.RUINE]='ruine'; TYPE_MOD[O.MENHIR]='menh
 TYPE_MOD[O.QUINTAINE]='quintaine'; TYPE_MOD[O.RATELIER]='ratelier'; TYPE_MOD[O.CAISSES]='caisses';
 TYPE_MOD[O.FOIN]='foin'; TYPE_MOD[O.CHARIOT]='chariot'; TYPE_MOD[O.PILIER]='pilier'; TYPE_MOD[O.OSSUAIRE]='ossuaire';
 TYPE_MOD[O.MAT]='mat';
+/* =====================================================================
+   BÂTIMENTS ET STRUCTURES — refaits pièce par pièce, à l'échelle d'un homme (~0,8).
+   Chaque pièce : [géométrie, couleur, position, taille, émissif, rotation, texture]
+   ===================================================================== */
+GEO.cyl12=new T3.CylinderGeometry(0.5,0.5,1,12);
+GEO.cyl6=new T3.CylinderGeometry(0.5,0.5,1,7);
+GEO.tore=new T3.TorusGeometry(0.5,0.1,8,20);
+GEO.demiCyl=new T3.CylinderGeometry(0.5,0.5,1,12,1,false,0,Math.PI);
+GEO.cone12=new T3.ConeGeometry(0.5,1,12);
+GEO.sph8=new T3.SphereGeometry(0.5,10,8);
+function P(g,c,pos,sc,tex,rot,em){ return [g,c,pos,sc,em||null,rot||null,tex||'-']; }
+const H2O=Math.PI/2;
+const BOIS_SOMBRE='#4a3220', BOIS_CLAIR='#8a6038', CHAUX='#e6dcc2', PIERRE_G='#9a9488', TUILE='#a84e34';
+/* une maison : soubassement, murs de chaux, colombages en relief, toit débordant */
+function maisonBase(){
+  const L=[
+    P('box','#8a8478',[0,0.14,0],[1.02,0.28,1.02],'pierreBase'),
+    P('box',CHAUX,[0,0.88,0],[0.95,1.2,0.95],'crepi'),
+    /* poteaux d'angle, sablières, croix de Saint-André */
+    P('box',BOIS_SOMBRE,[0.475,0.88,0.475],[0.07,1.22,0.07],'bois'), P('box',BOIS_SOMBRE,[-0.475,0.88,0.475],[0.07,1.22,0.07],'bois'),
+    P('box',BOIS_SOMBRE,[0.475,0.88,-0.475],[0.07,1.22,0.07],'bois'), P('box',BOIS_SOMBRE,[-0.475,0.88,-0.475],[0.07,1.22,0.07],'bois'),
+    P('box',BOIS_SOMBRE,[0,0.9,0.485],[1.0,0.06,0.035],'bois'), P('box',BOIS_SOMBRE,[0,0.9,-0.485],[1.0,0.06,0.035],'bois'),
+    P('box',BOIS_SOMBRE,[0.485,0.9,0],[0.035,0.06,1.0],'bois'), P('box',BOIS_SOMBRE,[-0.485,0.9,0],[0.035,0.06,1.0],'bois'),
+    P('box',BOIS_SOMBRE,[0,1.47,0.485],[1.0,0.07,0.04],'bois'), P('box',BOIS_SOMBRE,[0,1.47,-0.485],[1.0,0.07,0.04],'bois'),
+    P('box',BOIS_SOMBRE,[0.27,1.18,0.487],[0.045,0.6,0.03],'bois',[0,0,0.75]), P('box',BOIS_SOMBRE,[-0.27,1.18,0.487],[0.045,0.6,0.03],'bois',[0,0,-0.75]),
+    P('box',BOIS_SOMBRE,[0.27,1.18,-0.487],[0.045,0.6,0.03],'bois',[0,0,-0.75]), P('box',BOIS_SOMBRE,[-0.27,1.18,-0.487],[0.045,0.6,0.03],'bois',[0,0,0.75]),
+    /* toit à deux pans, débordant, avec sa poutre faîtière */
+    P('prisme',TUILE,[0,1.86,0],[1.16,0.78,1.22],'tuiles'),
+    P('cyl6',BOIS_SOMBRE,[0,2.26,0],[0.07,1.2,0.07],'bois',[0,0,H2O]),
+    P('box',BOIS_SOMBRE,[0,1.5,0.6],[1.16,0.05,0.05],'bois'), P('box',BOIS_SOMBRE,[0,1.5,-0.6],[1.16,0.05,0.05],'bois')
+  ];
+  return L;
+}
+function fenetre(x,z,ry){
+  /* cadre, vitre qui s'allume la nuit, volets ouverts, jardinière fleurie */
+  const s=Math.sin(ry), c=Math.cos(ry), o=function(dx,dz){ return [x+dx*c+dz*s, z-dx*s+dz*c]; };
+  const a=o(0,0), v1=o(-0.2,0.02), v2=o(0.2,0.02), j=o(0,0.05);
+  return [
+    P('box',BOIS_SOMBRE,[a[0],1.12,a[1]],[0.32,0.34,0.03],'bois',[0,ry,0]),
+    P('box','#7f93a2',[a[0],1.12,a[1]],[0.24,0.26,0.035],'fenetre',[0,ry,0],'#ffb050'),
+    P('box','#4a6a5a',[v1[0],1.12,v1[1]],[0.12,0.3,0.02],'bois',[0,ry+0.5,0]),
+    P('box','#4a6a5a',[v2[0],1.12,v2[1]],[0.12,0.3,0.02],'bois',[0,ry-0.5,0]),
+    P('box',BOIS_CLAIR,[j[0],0.93,j[1]],[0.3,0.06,0.08],'bois',[0,ry,0]),
+    P('sph8','#c83a3a',[j[0]-0.08*c,0.98,j[1]+0.08*s],[0.06,0.06,0.06]),
+    P('sph8','#e8c040',[j[0],0.99,j[1]],[0.06,0.06,0.06]),
+    P('sph8','#c84a8a',[j[0]+0.08*c,0.98,j[1]-0.08*s],[0.06,0.06,0.06])
+  ];
+}
+Object.assign(MOD,{
+  maison:maisonBase().concat(
+    /* porte avec son linteau et sa marche */
+    [P('box',BOIS_SOMBRE,[0,0.62,0.49],[0.4,0.72,0.04],'bois'),
+     P('box','#6b4a2a',[0,0.6,0.5],[0.32,0.66,0.03],'porte'),
+     P('box',BOIS_SOMBRE,[0,0.99,0.5],[0.46,0.07,0.06],'bois'),
+     P('box','#8a8478',[0,0.04,0.6],[0.46,0.08,0.18],'pierreBase'),
+     P('sph8','#c9a23c',[0.1,0.6,0.52],[0.03,0.03,0.03])],
+    fenetre(0.495,0,H2O), fenetre(-0.495,0,-H2O),
+    /* cheminée */
+    [P('box','#8a7e70',[0.28,2.15,0.22],[0.2,0.8,0.2],'pierreBase'), P('box','#5a5248',[0.28,2.56,0.22],[0.25,0.06,0.25],'pierreBase')]),
+  maisonB:maisonBase().concat(fenetre(0,0.495,0), fenetre(0,-0.495,Math.PI)),
+  tour:[
+    P('cyl12','#8a857a',[0,0.18,0],[1.14,0.36,1.14],'pierreBase'),
+    P('cyl12',PIERRE_G,[0,1.75,0],[1.0,3.1,1.0],'pierre'),
+    P('cyl12','#857f74',[0,3.32,0],[1.18,0.16,1.18],'pierre')]
+    .concat([0,1,2,3,4,5,6,7].map(function(k){ const a=k/8*6.2832; return P('box',PIERRE_G,[Math.sin(a)*0.52,3.53,Math.cos(a)*0.52],[0.18,0.26,0.13],'pierre',[0,a,0]); }))
+    .concat([
+      P('cone12',TUILE,[0,4.15,0],[1.15,1.15,1.15],'tuiles'),
+      P('cyl6',BOIS_SOMBRE,[0,4.95,0],[0.03,0.5,0.03],'bois'),
+      P('box','#bd4a3d',[0.13,5.05,0],[0.24,0.15,0.01],'tissu'),
+      P('box','#1a1a1a',[0,1.4,0.5],[0.06,0.28,0.04]), P('box','#1a1a1a',[0.5,2.3,0],[0.04,0.28,0.06]),
+      P('box','#7f93a2',[0,2.55,0.505],[0.12,0.22,0.03],'fenetre',null,'#ffb050'),
+      P('box','#6b4a2a',[0,0.5,0.5],[0.3,0.62,0.05],'porte')]),
+  donjon:[
+    P('box','#8a857a',[0,0.18,0],[1.06,0.36,1.06],'pierreBase'),
+    P('box',PIERRE_G,[0,2.0,0],[0.92,3.7,0.92],'pierre')]
+    .concat([[1,1],[1,-1],[-1,1],[-1,-1]].reduce(function(L,c){ return L.concat([
+      P('cyl12','#928c80',[c[0]*0.45,2.15,c[1]*0.45],[0.34,4.3,0.34],'pierre'),
+      P('cone12',TUILE,[c[0]*0.45,4.6,c[1]*0.45],[0.42,0.6,0.42],'tuiles')]); },[]))
+    .concat([-0.25,0,0.25].reduce(function(L,x){ return L.concat([
+      P('box',PIERRE_G,[x,4.0,0.42],[0.12,0.22,0.1],'pierre'), P('box',PIERRE_G,[x,4.0,-0.42],[0.12,0.22,0.1],'pierre'),
+      P('box',PIERRE_G,[0.42,4.0,x],[0.1,0.22,0.12],'pierre'), P('box',PIERRE_G,[-0.42,4.0,x],[0.1,0.22,0.12],'pierre')]); },[]))
+    .concat([
+      P('box','#7f93a2',[0,2.9,0.465],[0.14,0.26,0.03],'fenetre',null,'#ffb050'),
+      P('box','#7f93a2',[0,2.9,-0.465],[0.14,0.26,0.03],'fenetre',null,'#ffb050'),
+      P('box','#9a2e28',[0,2.1,0.47],[0.32,0.7,0.02],'tissu'),
+      P('sph8','#e0b94f',[0,2.15,0.485],[0.1,0.1,0.02]),
+      P('box','#5a3c24',[0,0.55,0.465],[0.34,0.72,0.04],'porte')]),
+  muraille:[
+    P('box','#8a857a',[0,0.15,0],[1.0,0.3,1.0],'pierreBase'),
+    P('box',PIERRE_G,[0,1.1,0],[0.88,1.9,0.88],'pierre'),
+    P('box','#857f74',[0,2.08,0],[0.94,0.08,0.94],'pierre'),
+    P('box',PIERRE_G,[0.33,2.27,0.33],[0.24,0.3,0.24],'pierre'), P('box',PIERRE_G,[-0.33,2.27,0.33],[0.24,0.3,0.24],'pierre'),
+    P('box',PIERRE_G,[0.33,2.27,-0.33],[0.24,0.3,0.24],'pierre'), P('box',PIERRE_G,[-0.33,2.27,-0.33],[0.24,0.3,0.24],'pierre')],
+  mur:[
+    P('box','#8a857a',[0,0.1,0],[0.98,0.2,0.98],'pierreBase'),
+    P('box','#9a948a',[0,0.68,0],[0.9,1.0,0.9],'pierreBase'),
+    P('box','#7e786e',[0,1.22,0],[0.96,0.1,0.96],'pierre')],
+  palis:[[-0.3,-0.3],[0.3,-0.3],[-0.3,0.3],[0.3,0.3],[0,0]].reduce(function(L,p,k){
+      const h=1.25+((k*37)%5)*0.04;
+      return L.concat([P('cyl6','#6b4a2a',[p[0],h/2,p[1]],[0.2,h,0.2],'ecorce'), P('cone','#8a6a48',[p[0],h+0.11,p[1]],[0.2,0.22,0.2],'bois')]); },[])
+    .concat([P('box',BOIS_SOMBRE,[0,0.45,0],[0.95,0.06,0.06],'bois'), P('box',BOIS_SOMBRE,[0,0.95,0],[0.06,0.06,0.95],'bois')]),
+  porte:[
+    P('box',PIERRE_G,[0.42,0.95,0],[0.2,1.9,0.34],'pierreBase'), P('box',PIERRE_G,[-0.42,0.95,0],[0.2,1.9,0.34],'pierreBase'),
+    P('box','#857f74',[0,1.82,0],[1.04,0.2,0.36],'pierre'),
+    P('box','#6b4a2a',[0.17,0.8,0],[0.33,1.5,0.08],'porte'), P('box','#6b4a2a',[-0.17,0.8,0],[0.33,1.5,0.08],'porte'),
+    P('box','#2a2624',[0,0.45,0.045],[0.66,0.06,0.02]), P('box','#2a2624',[0,1.15,0.045],[0.66,0.06,0.02]),
+    P('sph8','#2a2624',[0.05,0.8,0.06],[0.05,0.05,0.03]), P('sph8','#2a2624',[-0.05,0.8,0.06],[0.05,0.05,0.03])],
+  puits:[
+    P('cyl12','#9a9488',[0,0.32,0],[0.82,0.64,0.82],'pierreBase'),
+    P('cyl12','#8a857a',[0,0.66,0],[0.86,0.06,0.86],'pierre'),
+    P('cyl12','#1e3a44',[0,0.6,0],[0.62,0.02,0.62]),
+    P('cyl6',BOIS_SOMBRE,[0.38,0.95,0],[0.07,1.3,0.07],'bois'), P('cyl6',BOIS_SOMBRE,[-0.38,0.95,0],[0.07,1.3,0.07],'bois'),
+    P('prisme',TUILE,[0,1.72,0],[1.0,0.36,0.72],'tuiles'),
+    P('cyl6',BOIS_CLAIR,[0,1.2,0],[0.05,0.82,0.05],'bois',[0,0,H2O]),
+    P('cyl6','#c8b88a',[0,0.98,0],[0.012,0.45,0.012]),
+    P('cyl12',BOIS_CLAIR,[0,0.75,0],[0.14,0.14,0.14],'bois'),
+    P('box',BOIS_SOMBRE,[0.47,1.2,0],[0.04,0.04,0.18],'bois')],
+  etal:[
+    P('box',BOIS_CLAIR,[0,0.46,0.12],[0.96,0.07,0.52],'bois'),
+    P('box','#7a5433',[0,0.22,0.36],[0.96,0.44,0.05],'bois'),
+    P('cyl6',BOIS_SOMBRE,[0.45,0.75,0.36],[0.05,1.5,0.05],'bois'), P('cyl6',BOIS_SOMBRE,[-0.45,0.75,0.36],[0.05,1.5,0.05],'bois'),
+    P('cyl6',BOIS_SOMBRE,[0.45,0.85,-0.2],[0.05,1.7,0.05],'bois'), P('cyl6',BOIS_SOMBRE,[-0.45,0.85,-0.2],[0.05,1.7,0.05],'bois'),
+    P('box','#b9453a',[0,1.62,0.08],[1.08,0.03,0.78],'toileRayee',[0.28,0,0]),
+    P('sph8','#c83a3a',[-0.3,0.54,0.15],[0.08,0.08,0.08]), P('sph8','#d84a3a',[-0.22,0.54,0.2],[0.08,0.08,0.08]), P('sph8','#b83030',[-0.26,0.6,0.17],[0.08,0.08,0.08]),
+    P('sph8','#c89850',[0.05,0.55,0.15],[0.16,0.08,0.1]),
+    P('box','#8a6a3a',[0.3,0.58,0.12],[0.22,0.16,0.2],'bois'), P('sph8','#e0c040',[0.3,0.67,0.12],[0.06,0.06,0.06]),
+    P('box','#8a6a3a',[0.3,0.12,-0.3],[0.26,0.24,0.24],'bois')],
+  forge:[
+    P('box','#7a7468',[0,0.04,0],[1.0,0.08,1.0],'pierreBase'),
+    P('cyl6',BOIS_SOMBRE,[0.45,0.8,0.42],[0.08,1.6,0.08],'bois'), P('cyl6',BOIS_SOMBRE,[-0.45,0.8,0.42],[0.08,1.6,0.08],'bois'),
+    P('cyl6',BOIS_SOMBRE,[0.45,0.8,-0.42],[0.08,1.6,0.08],'bois'),
+    P('prisme','#5a4636',[0,1.82,0],[1.12,0.5,1.12],'bois'),
+    P('box','#6a645e',[-0.2,0.38,-0.2],[0.55,0.72,0.55],'pierreBase'),
+    P('box','#ff7a2a',[-0.2,0.75,-0.2],[0.4,0.04,0.4],null,null,'#ff5a10'),
+    P('box','#5a544e',[-0.22,1.55,-0.28],[0.26,1.5,0.26],'pierreBase'),
+    P('box','#3a3634',[0.25,0.2,0.18],[0.16,0.4,0.16]), P('box','#3a3634',[0.25,0.44,0.18],[0.34,0.1,0.15]),
+    P('cone','#3a3634',[0.47,0.44,0.18],[0.08,0.14,0.08],null,[0,0,-H2O]),
+    P('cyl12','#6a4a2a',[0.32,0.24,-0.3],[0.28,0.48,0.28],'bois'), P('cyl12','#2a4a54',[0.32,0.48,-0.3],[0.24,0.02,0.24])],
+  tente:[
+    P('prisme','#d8c8a0',[0,0.5,0],[1.0,1.0,1.0],'toileRayee'),
+    P('cyl6',BOIS_SOMBRE,[0,1.02,0],[0.035,1.1,0.035],'bois',[0,0,H2O]),
+    P('cyl6',BOIS_SOMBRE,[0.52,0.5,0],[0.035,1.05,0.035],'bois'), P('cyl6',BOIS_SOMBRE,[-0.52,0.5,0],[0.035,1.05,0.035],'bois'),
+    P('box','#2a2420',[0.5,0.3,0],[0.02,0.55,0.32]),
+    P('cyl6','#c8b88a',[0.62,0.55,0.3],[0.01,0.8,0.01],null,[0.6,0,0]), P('cyl6','#c8b88a',[0.62,0.55,-0.3],[0.01,0.8,0.01],null,[-0.6,0,0])],
+  banniere:[
+    P('cyl12','#8a857a',[0,0.08,0],[0.4,0.16,0.4],'pierreBase'),
+    P('cyl6','#5a4630',[0,1.25,0],[0.06,2.5,0.06],'bois'),
+    P('sph8','#e0b94f',[0,2.53,0],[0.1,0.1,0.1]),
+    P('cyl6','#5a4630',[0,2.32,0],[0.03,0.62,0.03],'bois',[0,0,H2O]),
+    P('box','#bd4a3d',[0,1.85,0.02],[0.56,0.9,0.02],'tissu'),
+    P('sph8','#e0b94f',[0,1.95,0.04],[0.16,0.16,0.02]),
+    P('cone','#bd4a3d',[0.14,1.35,0.02],[0.14,0.12,0.02],'tissu',[0,0,Math.PI]), P('cone','#bd4a3d',[-0.14,1.35,0.02],[0.14,0.12,0.02],'tissu',[0,0,Math.PI])],
+  panneau:[
+    P('cyl6',BOIS_SOMBRE,[0,0.62,0],[0.08,1.24,0.08],'ecorce'),
+    P('box',BOIS_CLAIR,[0.16,1.05,0],[0.42,0.13,0.03],'bois',[0,0.3,0]),
+    P('box',BOIS_CLAIR,[-0.14,0.84,0],[0.38,0.12,0.03],'bois',[0,-0.45,0]),
+    P('cone',BOIS_CLAIR,[0.39,1.05,0.07],[0.13,0.12,0.03],'bois',[0,0.3,-H2O])],
+  coffre:[
+    P('box','#7a5433',[0,0.16,0],[0.56,0.3,0.36],'bois'),
+    P('demiCyl','#8a6038',[0,0.31,0],[0.36,0.56,0.36],'bois',[0,0,H2O]),
+    P('box','#4a4440',[0.2,0.25,0],[0.04,0.36,0.38]), P('box','#4a4440',[-0.2,0.25,0],[0.04,0.36,0.38]),
+    P('box','#c9a23c',[0,0.3,0.19],[0.08,0.1,0.02])],
+  ruine:[
+    P('box','#8f8a80',[-0.32,0.55,0],[0.26,1.1,0.92],'pierre'),
+    P('box','#8f8a80',[0.05,0.3,0.36],[0.55,0.6,0.22],'pierre'),
+    P('cyl12','#a09a90',[0.3,0.65,-0.28],[0.2,1.3,0.2],'pierre'),
+    P('cyl12','#a09a90',[0.15,0.1,0.0],[0.18,0.7,0.18],'pierre',[0,0.6,H2O]),
+    P('roc','#8a857a',[0.35,0.08,0.3],[0.22,0.16,0.2]), P('roc','#8a857a',[-0.05,0.07,-0.3],[0.2,0.14,0.18])],
+  menhir:[P('roc','#8a8f84',[0,0.95,0],[0.48,1.95,0.4],'roche',[0,0.3,0.05]), P('roc','#7a7f74',[0.2,0.08,0.15],[0.25,0.16,0.2],'roche')],
+  pont:[-0.4,-0.2,0,0.2,0.4].map(function(z,k){ return P('box',k%2?'#8a5a33':'#7a5030',[0,0.02,z],[1.04,0.06,0.18],'bois'); })
+    .concat([[0.47,0.45],[-0.47,0.45],[0.47,-0.45],[-0.47,-0.45]].map(function(p){ return P('cyl6',BOIS_SOMBRE,[p[0],0.22,p[1]],[0.06,0.48,0.06],'bois'); }))
+    .concat([P('box',BOIS_CLAIR,[0.47,0.42,0],[0.04,0.04,1.0],'bois'), P('box',BOIS_CLAIR,[-0.47,0.42,0],[0.04,0.04,1.0],'bois')]),
+  pilier:[P('box','#9a948a',[0,0.1,0],[0.5,0.2,0.5],'pierre'), P('cyl12','#a8a296',[0,1.0,0],[0.34,1.6,0.34],'pierre'), P('box','#9a948a',[0,1.88,0],[0.46,0.16,0.46],'pierre')],
+  ossuaire:[
+    P('sph8','#e6dfc8',[0,0.1,0],[0.18,0.16,0.2]), P('sph8','#1a1a1a',[0.04,0.11,0.09],[0.04,0.04,0.02]), P('sph8','#1a1a1a',[-0.04,0.11,0.09],[0.04,0.04,0.02]),
+    P('cyl6','#e0d8c0',[0.2,0.04,0.1],[0.04,0.4,0.04],null,[H2O,0.5,0]), P('cyl6','#e0d8c0',[-0.15,0.04,-0.12],[0.04,0.36,0.04],null,[H2O,-0.8,0]),
+    P('sph8','#e6dfc8',[-0.25,0.08,0.2],[0.14,0.13,0.15])],
+  caisses:[
+    P('box','#8a6a3a',[-0.14,0.22,0],[0.44,0.44,0.44],'bois'), P('box','#9a7a46',[0.22,0.17,0.18],[0.34,0.34,0.34],'bois',[0,0.4,0]),
+    P('box','#7a5a30',[-0.1,0.6,0.02],[0.3,0.3,0.3],'bois',[0,-0.3,0]),
+    P('cyl12','#7a5433',[0.22,0.25,-0.22],[0.3,0.5,0.3],'bois'), P('cyl12','#3a3634',[0.22,0.12,-0.22],[0.31,0.03,0.31]), P('cyl12','#3a3634',[0.22,0.38,-0.22],[0.31,0.03,0.31])],
+  foin:[P('cyl12','#d9b85a',[0,0.28,0.12],[0.56,0.85,0.56],'tissu',[0,0,H2O]), P('cyl12','#c9a84a',[0.1,0.25,-0.32],[0.5,0.7,0.5],'tissu',[0,0.5,H2O])],
+  chariot:[
+    P('box','#7a5433',[0,0.48,0],[0.6,0.08,1.0],'bois'),
+    P('box','#6a4a2a',[0.29,0.62,0],[0.04,0.22,1.0],'bois'), P('box','#6a4a2a',[-0.29,0.62,0],[0.04,0.22,1.0],'bois'),
+    P('box','#6a4a2a',[0,0.62,-0.48],[0.6,0.22,0.04],'bois'),
+    P('tore','#4a3220',[0.36,0.3,0.1],[0.56,0.56,0.56],'bois',[0,H2O,0]), P('tore','#4a3220',[-0.36,0.3,0.1],[0.56,0.56,0.56],'bois',[0,H2O,0]),
+    P('box','#4a3220',[0.36,0.3,0.1],[0.03,0.5,0.04],'bois'), P('box','#4a3220',[0.36,0.3,0.1],[0.03,0.04,0.5],'bois'),
+    P('box','#4a3220',[-0.36,0.3,0.1],[0.03,0.5,0.04],'bois'), P('box','#4a3220',[-0.36,0.3,0.1],[0.03,0.04,0.5],'bois'),
+    P('cyl6','#5a3c24',[0.18,0.42,0.75],[0.04,0.6,0.04],'bois',[H2O+0.25,0,0]), P('cyl6','#5a3c24',[-0.18,0.42,0.75],[0.04,0.6,0.04],'bois',[H2O+0.25,0,0]),
+    P('cyl12','#d9b85a',[0.05,0.62,0.1],[0.3,0.5,0.3],'tissu',[0,0,H2O])],
+  quintaine:[
+    P('cyl6',BOIS_SOMBRE,[0,0.65,0],[0.09,1.3,0.09],'ecorce'),
+    P('cyl6',BOIS_SOMBRE,[0,1.05,0],[0.05,0.7,0.05],'bois',[0,0,H2O]),
+    P('sph8','#c8b48a',[0,0.85,0],[0.3,0.42,0.22],'tissu'),
+    P('sph8','#c8b48a',[0,1.18,0],[0.18,0.18,0.18],'tissu'),
+    P('cyl12','#8a5a33',[0.3,0.95,0.04],[0.24,0.03,0.24],'bois',[H2O,0,0])],
+  ratelier:[
+    P('box','#6a4a2a',[0,0.35,0],[0.9,0.06,0.25],'bois'), P('box','#6a4a2a',[0,0.9,-0.08],[0.9,0.06,0.08],'bois'),
+    P('cyl6',BOIS_SOMBRE,[0.42,0.5,0],[0.05,1.0,0.05],'bois'), P('cyl6',BOIS_SOMBRE,[-0.42,0.5,0],[0.05,1.0,0.05],'bois')]
+    .concat([-0.25,0,0.25].reduce(function(L,x){ return L.concat([P('cyl6','#8a6038',[x,0.75,0.0],[0.03,1.4,0.03],'bois',[-0.12,0,0]), P('cone','#cfd6da',[x,1.47,-0.09],[0.05,0.16,0.05],null,[-0.12,0,0])]); },[])),
+  mat:[P('cyl6','#6b5536',[0,1.6,0],[0.1,3.2,0.1],'bois'), P('cyl6','#6b5536',[0,2.6,0],[0.05,1.2,0.05],'bois',[0,0,H2O]), P('box','#e0d6bc',[0,2.0,0.03],[1.0,1.1,0.02],'tissu')],
+  feu:[0,1,2,3,4,5,6,7].map(function(k){ const a=k/8*6.2832; return P('roc','#6a6e66',[Math.sin(a)*0.32,0.06,Math.cos(a)*0.32],[0.16,0.12,0.14],'roche'); })
+    .concat([P('cyl6','#5b3c24',[0,0.1,0],[0.07,0.55,0.07],'ecorce',[H2O,0.4,0]), P('cyl6','#4b3420',[0,0.12,0],[0.07,0.55,0.07],'ecorce',[H2O,-0.7,0]),
+      P('cyl6','#5b3c24',[0,0.15,0],[0.06,0.5,0.06],'ecorce',[H2O,1.6,0]), P('cyl12','#ff6a1a',[0,0.06,0],[0.32,0.03,0.32],null,null,'#ff4a08')]),
+  feuMort:[0,1,2,3,4,5,6,7].map(function(k){ const a=k/8*6.2832; return P('roc','#5a5e56',[Math.sin(a)*0.32,0.06,Math.cos(a)*0.32],[0.16,0.12,0.14],'roche'); })
+    .concat([P('cyl6','#2a2420',[0,0.08,0],[0.07,0.5,0.07],'ecorce',[H2O,0.4,0]), P('cyl6','#2e2620',[0,0.1,0],[0.07,0.5,0.07],'ecorce',[H2O,-0.7,0]),
+      P('cyl12','#6a6660',[0,0.03,0],[0.42,0.03,0.42])])
+});
+delete COUCHE.chariot;
 const ARBRES={chene:1,automne:1,bouleau:1,pin:1,sapinNeige:1,saule:1,arbreMort:1,palmier:1};
 const ORGA=Object.assign({rocher:1,filon:1,silex:1,buisson:1,buissonVide:1,hautes:1,roseau:1,champi:1,ossuaire:1,caisses:1,herbe:1},ARBRES);
 const PETIT={hautes:1,roseau:1,champi:1,silex:1,ornH:1,ornV:1,touffe:1,pave:1,herbe:1};
@@ -10155,6 +10401,7 @@ function texPiece(nom,k,p){
 }
 /* force du vent par pièce : feuillages et herbes ondulent, troncs et pierres non */
 function ventPiece(nom,k,p){
+  if((nom==='banniere'||nom==='mat'||nom==='tour')&&p[6]==='tissu') return 0.07;
   if(nom==='herbe') return 0.16;
   if(nom==='roseau'||nom==='hautes'||nom==='touffe') return 0.1;
   if(ARBRES[nom]&&p[0]!=='tronc'&&!(nom==='arbreMort')) return nom==='palmier'?0.05:0.035;
@@ -10170,12 +10417,14 @@ const eTmp=new T3.Euler();
 for(const nom in MOD){
   qPart[nom]=MOD[nom].map(function(p){ return p[5]?new T3.Quaternion().setFromEuler(eTmp.set(p[5][0],p[5][1],p[5][2])):null; });
   inst[nom]=MOD[nom].map(function(p,k){
-    const cap=CAPS[nom]||CAP;
+    /* les bâtiments sont rares autour du joueur : inutile de leur réserver autant de place */
+    const cap=CAPS[nom]||((ORGA[nom]||PETIT[nom])?CAP:500);
     const m=new T3.InstancedMesh(GEO[p[0]],matDecor(texPiece(nom,k,p),p[4],ventPiece(nom,k,p)),cap);
     m.instanceColor=new T3.InstancedBufferAttribute(new Float32Array(cap*3).fill(1),3);
     m.instanceColor.setUsage(T3.DynamicDrawUsage);
     m.userData.base=new T3.Color(p[1]); m.userData.cap=cap;
-    m.count=0; m.castShadow=!PETIT[nom]; m.receiveShadow=true; m.frustumCulled=false;
+    /* les toutes petites pièces (fleurs, vitres, clous) ne projettent pas d'ombre : invisible, et ça coûte */
+    m.count=0; m.castShadow=!PETIT[nom]&&Math.max(p[3][0],p[3][1],p[3][2])>0.14; m.receiveShadow=true; m.frustumCulled=false;
     m.instanceMatrix.setUsage(T3.DynamicDrawUsage);
     scene.add(m); return m;
   });
@@ -10206,6 +10455,8 @@ const ECH_MOD={
   quintaine:[0.9,0.9,0.9], ratelier:[0.9,0.85,0.9], panneau:[0.9,0.9,0.9]
 };
 const UN=[1,1,1];
+/* les modèles refaits sont dessinés directement à la bonne taille : plus d'étirement après coup */
+['maison','maisonB','tour','donjon','muraille','mur','palis','porte','forge','tente','banniere','mat','menhir','pilier','ruine','chariot','caisses','foin','coffre','quintaine','ratelier','panneau'].forEach(function(n){ delete ECH_MOD[n]; });
 function poserModele(nom,px,pz,h,rot,ech,v,teinte){
   const pieces=MOD[nom], mm=inst[nom], qp=qPart[nom], em=ECH_MOD[nom]||UN;
   q.setFromAxisAngle(axeY,rot||0); ech=ech||1;
@@ -10268,8 +10519,10 @@ function solRoute(x,y,i,t,vo){
     placerA('touffe',cx+bords[k][0]*.42+(bords[k][1]?dec:0),cz+bords[k][1]*.42+(bords[k][0]?dec:0),v*0.3,0.8+(v%5)/10);
   }
 }
+const cheminees=[];
 function construireDecor(){
   const S=J.S, ob=J.objets, t=J.tuiles, vo=J.varObj;
+  cheminees.length=0;
   const px=(S.j.x/TS)|0, pz=(S.j.y/TS)|0;
   for(const n in inst) for(const m of inst[n]) m.count=0;
   for(let y=Math.max(0,pz-RAYON);y<=Math.min(H-1,pz+RAYON);y++)
@@ -10299,8 +10552,12 @@ function construireDecor(){
     const rot=org?v*0.37:0;
     const cx=x+0.5, cz=y+0.5, h=(nom==='pont')?0:solEn(cx,cz);
     poserModele(nom,cx,cz,h,rot,ech,v);
+    if(Math.abs(x-px)<16&&Math.abs(y-pz)<16){
+      if(nom==='maison') cheminees.push([cx+0.28,h+2.62,cz+0.22]);
+      else if(nom==='forge') cheminees.push([cx-0.22,h+2.35,cz-0.28]);
+    }
   }
-  for(const n in inst) for(const m of inst[n]){ m.instanceMatrix.needsUpdate=true; if(m.instanceColor) m.instanceColor.needsUpdate=true; }
+  for(const n in inst) for(const m of inst[n]){ m.visible=m.count>0; m.instanceMatrix.needsUpdate=true; if(m.instanceColor) m.instanceColor.needsUpdate=true; }
   derTx=px; derTz=pz;
 }
 
@@ -10384,6 +10641,70 @@ const matBec=new T3.MeshStandardMaterial({color:0xd8a040,roughness:0.5});
 const matLame=new T3.MeshStandardMaterial({color:0xcfd6da,roughness:0.25,metalness:0.8});
 const matBoisArme=new T3.MeshStandardMaterial({color:0x7a5433,map:TEX_OBJ.ecorce,roughness:0.8});
 const matCasque=new T3.MeshStandardMaterial({color:0xa8b0b6,map:TEX_P.metal,roughness:0.35,metalness:0.7});
+/* ===================== ARMES ET OUTILS =====================
+   Construits dans le repère de la main : la main est à l'origine,
+   l'arme part vers l'avant (+z) quand le bras pend. */
+const matCuirArme=new T3.MeshStandardMaterial({color:0x4a3020,map:TEX_P.cuir,roughness:0.8});
+const matOrArme=new T3.MeshStandardMaterial({color:0xd8b04a,roughness:0.3,metalness:0.85});
+const matAcier=new T3.MeshStandardMaterial({color:0xd4dade,roughness:0.22,metalness:0.9});
+const matAcierSombre=new T3.MeshStandardMaterial({color:0x6a7074,roughness:0.4,metalness:0.8});
+const matCorde=new T3.MeshStandardMaterial({color:0xd8ccaa,roughness:0.9});
+function extrude(forme,ep,biseau){
+  const g=new T3.ExtrudeGeometry(forme,{depth:ep,bevelEnabled:!!biseau,bevelThickness:biseau||0,bevelSize:biseau||0,bevelSegments:1,curveSegments:8});
+  g.translate(0,0,-ep/2); return g;
+}
+const geoLameEpee=(function(){ const s=new T3.Shape(), w=0.046, L=0.5;
+  s.moveTo(-w/2,0); s.lineTo(-w/2,L*0.82); s.quadraticCurveTo(-w*0.35,L*0.93,0,L); s.quadraticCurveTo(w*0.35,L*0.93,w/2,L*0.82); s.lineTo(w/2,0); s.lineTo(-w/2,0);
+  const g=extrude(s,0.006,0.003); g.rotateX(Math.PI/2); g.rotateZ(Math.PI/2); return g; })();
+const geoFeuilleLance=(function(){ const s=new T3.Shape();
+  s.moveTo(0,0); s.quadraticCurveTo(0.05,0.06,0,0.22); s.quadraticCurveTo(-0.05,0.06,0,0);
+  const g=extrude(s,0.008,0.004); g.rotateX(Math.PI/2); return g; })();
+const geoFerHache=(function(){ const s=new T3.Shape();
+  s.moveTo(0,-0.03); s.lineTo(0.05,-0.035); s.quadraticCurveTo(0.1,-0.06,0.135,-0.09);
+  s.quadraticCurveTo(0.16,0,0.135,0.09); s.quadraticCurveTo(0.1,0.06,0.05,0.035); s.lineTo(0,0.03); s.lineTo(0,-0.03);
+  const g=extrude(s,0.018,0.004); g.rotateX(Math.PI/2); return g; })();
+const geoArcBois=(function(){
+  const c=new T3.QuadraticBezierCurve3(new T3.Vector3(0,-0.4,-0.11),new T3.Vector3(0,0,0.13),new T3.Vector3(0,0.4,-0.11));
+  return new T3.TubeGeometry(c,20,0.013,6,false); })();
+function tige(g,m,z0,z1,r){ const c=me(G2.cyl,m,0,0,(z0+z1)/2,r*2,Math.abs(z1-z0),r*2,g); c.rotation.x=Math.PI/2; return c; }
+function construireArme(type){
+  const g=new T3.Group();
+  if(type==='epee'){
+    tige(g,matCuirArme,-0.05,0.06,0.016);
+    me(G2.sph,matOrArme,0,0,-0.065,0.04,0.04,0.045,g);
+    me(GEO.box,matAcier,0,0,0.07,0.14,0.022,0.024,g);
+    me(G2.sph,matOrArme,0.072,0,0.07,0.026,0.026,0.026,g); me(G2.sph,matOrArme,-0.072,0,0.07,0.026,0.026,0.026,g);
+    const l=new T3.Mesh(geoLameEpee,matAcier); l.position.z=0.08; l.castShadow=true; g.add(l);
+    me(GEO.box,matAcierSombre,0,0.005,0.28,0.008,0.003,0.34,g);
+  } else if(type==='lance'){
+    tige(g,matBoisArme,-0.38,0.86,0.02);
+    tige(g,matCuirArme,0.82,0.9,0.026);
+    tige(g,matAcierSombre,-0.4,-0.36,0.024);
+    const f=new T3.Mesh(geoFeuilleLance,matAcier); f.position.z=0.88; f.castShadow=true; g.add(f);
+  } else if(type==='hache'){
+    tige(g,matBoisArme,-0.12,0.44,0.021);
+    tige(g,matCuirArme,-0.1,0.02,0.024);
+    const t=new T3.Mesh(geoFerHache,matAcier); t.position.set(0.012,0,0.38); t.castShadow=true; g.add(t);
+    me(GEO.box,matAcierSombre,-0.03,0,0.38,0.05,0.03,0.07,g);
+  } else if(type==='pioche'){
+    tige(g,matBoisArme,-0.12,0.44,0.021);
+    me(GEO.box,matAcierSombre,0,0,0.4,0.06,0.04,0.06,g);
+    const a=me(G2.cone,matAcier,0.12,0,0.38,0.035,0.2,0.035,g); a.rotation.z=-Math.PI/2+0.3;
+    const b=me(G2.cone,matAcier,-0.12,0,0.38,0.035,0.2,0.035,g); b.rotation.z=Math.PI/2-0.3;
+  } else if(type==='arc'){
+    const a=new T3.Mesh(geoArcBois,matBoisArme); a.castShadow=true; g.add(a);
+    me(G2.cyl,matCuirArme,0,0,0.02,0.035,0.11,0.035,g);
+    me(G2.cyl,matCorde,0,0,-0.11,0.004,0.8,0.004,g);
+  } else if(type==='torche'){
+    const t=new T3.Group(); t.rotation.x=Math.PI/2; g.add(t);
+    me(G2.cyl,matBoisArme,0,0.08,0,0.04,0.36,0.04,t);
+    me(G2.cyl,new T3.MeshStandardMaterial({color:0x3a2a1e,roughness:1}),0,0.28,0,0.07,0.09,0.07,t);
+    const f1=me(G2.cone,new T3.MeshBasicMaterial({color:0xff8a2a}),0,0.4,0,0.1,0.2,0.1,t); f1.castShadow=false;
+    const f2=me(G2.cone,new T3.MeshBasicMaterial({color:0xfff0a0}),0,0.37,0,0.055,0.12,0.055,t); f2.castShadow=false;
+    g.userData.flammes=[f1,f2];
+  }
+  return g;
+}
 function me(geo,m,px,py,pz,sx,sy,sz,parent){ const o=new T3.Mesh(geo,m); o.position.set(px,py,pz); o.scale.set(sx,sy,sz); o.castShadow=true; parent.add(o); return o; }
 function piv(px,py,pz,parent){ const g=new T3.Group(); g.position.set(px,py,pz); parent.add(g); return g; }
 
@@ -10437,16 +10758,10 @@ function creerHumain(){
   });
   /* armes et torche, tenues dans les mains */
   const mD=u.brasD.userData.coude, mG=u.brasG.userData.coude;
-  u.poignee=me(GEO.box,matBoisArme,0,-0.215,0.03,0.03,0.03,0.11,mD);
-  u.garde=me(GEO.box,matLame,0,-0.215,0.085,0.1,0.02,0.02,mD);
-  u.lame=me(GEO.box,matLame,0,-0.215,0.32,0.036,0.012,0.44,mD);
-  u.hampe=me(G2.cyl,matBoisArme,0,-0.215,0.22,0.026,1.12,0.026,mD); u.hampe.rotation.x=Math.PI/2;
-  u.pointeLance=me(G2.cone,matLame,0,-0.215,0.82,0.05,0.13,0.05,mD); u.pointeLance.rotation.x=Math.PI/2;
-  u.hacheManche=me(G2.cyl,matBoisArme,0,-0.215,0.16,0.028,0.46,0.028,mD); u.hacheManche.rotation.x=Math.PI/2;
-  u.hacheTete=me(GEO.box,matLame,0,-0.16,0.34,0.022,0.13,0.1,mD);
-  u.arc=me(G2.arc,matBoisArme,0,-0.215,0.06,1,1,1,mD);
-  u.manche=me(G2.cyl,matBoisArme,0,-0.24,0.05,0.026,0.24,0.026,mG); u.manche.rotation.x=-0.4;
-  u.torche=me(G2.cone,M.flamme,0,-0.12,0.1,0.07,0.14,0.07,mG); u.torche.castShadow=false;
+  u.armes={};
+  ['epee','lance','hache','pioche','arc'].forEach(function(t){
+    const a=construireArme(t); a.position.set(0,-0.215,0.015); a.visible=false; mD.add(a); u.armes[t]=a; });
+  u.torche=construireArme('torche'); u.torche.position.set(0,-0.215,0.02); u.torche.visible=false; mG.add(u.torche);
   /* jambes : hanche → genou → pied */
   [-1,1].forEach(function(c){
     const j=piv(c*0.075,0.56,0,g);
@@ -10682,12 +10997,10 @@ function animerHumain(u,f,look,o,ph,v,T){
   u.tete.rotation.set(0,Math.sin(T*0.5)*0.12*(1-v),0);
   /* armes */
   const a=o.arme;
-  vis(u.poignee,a==='epee'); vis(u.garde,a==='epee'); vis(u.lame,a==='epee');
-  vis(u.hampe,a==='lance'); vis(u.pointeLance,a==='lance');
-  vis(u.hacheManche,a==='hache'); vis(u.hacheTete,a==='hache');
-  vis(u.arc,a==='arc');
-  vis(u.manche,!!o.torche); vis(u.torche,!!o.torche);
-  if(o.torche){ u.brasG.rotation.x=-0.75; u.brasG.userData.coude.rotation.x=-0.6; u.torche.scale.y=0.12+Math.random()*0.05; }
+  for(const t in u.armes) u.armes[t].visible=(a===t);
+  u.torche.visible=!!o.torche;
+  if(o.torche){ u.brasG.rotation.x=-0.75; u.brasG.userData.coude.rotation.x=-0.6;
+    const fl=u.torche.userData.flammes, s=0.85+Math.random()*0.3; fl[0].scale.set(0.1,0.2*s,0.1); fl[1].scale.set(0.055,0.12*(2-s),0.055); }
   if(o.pare){ u.brasD.rotation.set(-1.35,0,-0.45); u.brasG.rotation.set(-1.35,0,0.45);
     u.brasD.userData.coude.rotation.x=-0.9; u.brasG.userData.coude.rotation.x=-0.9; }
   if(o.roule) f.rotation.x=o.roule;
@@ -11189,12 +11502,15 @@ const matHampe=mat('#8a5a33'), matPointe=mat('#b9c0c2'), matPlume=mat('#e8e2d0')
 const geoPointe=(function(){ const g=new T3.ConeGeometry(0.5,1,6); g.rotateX(Math.PI/2); return g; })();
 function fleche(){
   if(nFle>=fleches.length){
+    /* flèche : hampe ronde, pointe d'acier en losange, trois plumes à 120° et une encoche */
     const g=new T3.Group();
-    const h=new T3.Mesh(GEO.box,matHampe); h.scale.set(.035,.035,.62);
-    const p=new T3.Mesh(geoPointe,matPointe); p.scale.set(.09,.09,.16); p.position.z=.38;
-    const e1=new T3.Mesh(GEO.box,matPlume); e1.scale.set(.14,.012,.13); e1.position.z=-.27;
-    const e2=new T3.Mesh(GEO.box,matPlume); e2.scale.set(.012,.14,.13); e2.position.z=-.27;
-    [h,p,e1,e2].forEach(function(m){ m.castShadow=true; g.add(m); });
+    const h=new T3.Mesh(G2.cyl,matHampe); h.rotation.x=Math.PI/2; h.scale.set(.022,.62,.022); g.add(h);
+    const p=new T3.Mesh(geoPointe,matAcier); p.scale.set(.06,.035,.15); p.position.z=.37; g.add(p);
+    const bague=new T3.Mesh(G2.cyl,matCuirArme); bague.rotation.x=Math.PI/2; bague.scale.set(.028,.03,.028); bague.position.z=.29; g.add(bague);
+    for(let k=0;k<3;k++){ const pl=new T3.Group(); pl.rotation.z=k*2.094; pl.position.z=-.24; g.add(pl);
+      const e=new T3.Mesh(GEO.box,k?matPlume:mat('#bd4a3d')); e.scale.set(.004,.045,.12); e.position.y=.028; pl.add(e); }
+    const enc=new T3.Mesh(GEO.box,mat('#2a2420')); enc.scale.set(.03,.03,.02); enc.position.z=-.31; g.add(enc);
+    g.children.forEach(function(m){ m.castShadow=true; });
     scene.add(g); fleches.push(g);
   }
   const f=fleches[nFle++]; f.visible=true; return f;
@@ -11378,6 +11694,9 @@ function piece(g,geo,coul,p,s,rot,emis){
 }
 function modeleObjet(id){
   const g=new T3.Group(); id=(id||'')+'';
+  /* les armes et outils utilisent les mêmes modèles que ceux tenus en main, dressés à la verticale */
+  const arme=/hache/.test(id)?'hache':/pioche/.test(id)?'pioche':/lance/.test(id)?'lance':(/arc/.test(id)&&!/arcane/.test(id))?'arc':/torche/.test(id)?'torche':/epee/.test(id)?'epee':null;
+  if(arme){ const a=construireArme(arme); a.rotation.x=arme==='arc'||arme==='torche'?0:-Math.PI/2; a.position.y=arme==='lance'?-0.3:-0.15; a.scale.setScalar(arme==='lance'?0.8:1.4); g.add(a); return g; }
   const manche=function(l){ piece(g,GEO.box,'#8a5a33',[0,0,0],[.05,l||.6,.05]); };
   if(/hache/.test(id)){ manche(); piece(g,GEO.box,'#c9d0d2',[.08,.24,0],[.2,.14,.04]); }
   else if(/pioche/.test(id)){ manche(); piece(g,GEO.box,'#c9d0d2',[0,.27,0],[.46,.06,.05]); }
@@ -11492,6 +11811,8 @@ function evenement(n,d){
   const S=J.S; if(!S) return;
   if(n==='objet'||n==='recolte'){
     const x=d.i%W, y=(d.i/W)|0;
+    if(Math.abs(x-S.j.x/TS)>27||Math.abs(y-S.j.y/TS)>27) return;
+    if(n==='objet') derTx=-1;   /* le décor visible a changé : on le redessine à l'image suivante */
     if(Math.abs(x-S.j.x/TS)>22||Math.abs(y-S.j.y/TS)>22) return;
     if(++evtImage>30||S.t<800) return;      /* nouvelle partie, chargement : pas de feu d'artifice */
   }
@@ -11649,6 +11970,13 @@ function off2(f,a,d){ f.position.x+=Math.sin(a)*d; f.position.z+=Math.cos(a)*d; 
 /* --- mise à jour de tout ce qui précède, une fois par image --- */
 function majAnims(S,dt,X,Z,hJ){
   evtImage=0;
+  /* fumée des cheminées : elle monte en s'élargissant et dérive avec le vent */
+  for(let k=0;k<cheminees.length;k++){
+    if(Math.random()>dt*2.2) continue;
+    const c=cheminees[k], g=0.55+Math.random()*0.2;
+    etincelle(c[0]+(Math.random()-.5)*0.08,c[1],c[2]+(Math.random()-.5)*0.08,0.25+Math.random()*0.15,0.45+Math.random()*0.3,0.08,
+      'rgb('+Math.round(g*200)+','+Math.round(g*198)+','+Math.round(g*195)+')',0.14+Math.random()*0.1,2.6,-0.05,false);
+  }
   majDebris(dt); majTransitoires(dt); majFantomes(dt);
   if(anim.pouvoir) anim.pouvoir.t+=dt;
   anim.mal=Math.max(0,anim.mal-dt); anim.parade=Math.max(0,anim.parade-dt);
@@ -11884,7 +12212,7 @@ function appliquerQualite(q){
   soleil.shadow.mapSize.set(q===0?2048:1024,q===0?2048:1024);
   soleil.castShadow=q<2;
   DENS_MULT=q===2?0:q===1?0.5:1;
-  derTx=-1; redim();
+  derTx=-1; redim(); redimComposer();
 }
 function mesurerQualite(){
   const now=performance.now(), d=(now-derFrame)/1000; derFrame=now;
@@ -11897,6 +12225,117 @@ function mesurerQualite(){
 }
 let DENS_MULT=1;
 if(tactileEcran) setTimeout(function(){ appliquerQualite(1); },0);
+
+/* =====================================================================
+   RENDU : eau à profondeur, ciel, et passe « cinéma »
+   ===================================================================== */
+/* --- profondeur de l'eau : une petite image où chaque pixel dit combien d'eau il y a --- */
+const profData=new Uint8Array((W+1)*(H+1)*4);
+const texProf=new T3.DataTexture(profData,W+1,H+1,T3.RGBAFormat);
+texProf.magFilter=T3.LinearFilter; texProf.minFilter=T3.LinearFilter;
+function majTexProfondeur(){
+  if(!coins) return;
+  for(let k=0;k<(W+1)*(H+1);k++){
+    const p=Math.max(0,Math.min(1,(-0.2-coins[k])/0.7));
+    profData[k*4]=Math.round(p*255); profData[k*4+3]=255;
+  }
+  texProf.needsUpdate=true;
+}
+const uEau={uProf:{value:texProf},uT:{value:0},uCiel:{value:new T3.Color(0x9fc0d0)},uTaille:{value:new T3.Vector2(W+1,H+1)}};
+eau.material.flatShading=false;
+eau.material.onBeforeCompile=function(sh){
+  Object.assign(sh.uniforms,uEau);
+  sh.vertexShader='varying vec3 vMondeE;\n'+sh.vertexShader.replace('#include <project_vertex>',
+    '#include <project_vertex>\n vMondeE=(modelMatrix*vec4(transformed,1.0)).xyz;');
+  sh.fragmentShader='uniform sampler2D uProf; uniform float uT; uniform vec3 uCiel; uniform vec2 uTaille; varying vec3 vMondeE;\n'+
+    sh.fragmentShader.replace('#include <color_fragment>',
+    '#include <color_fragment>\n'+
+    ' float prof=texture2D(uProf,(vMondeE.xz+0.5)/uTaille).r;\n'+
+    ' vec3 peu=vec3(0.32,0.74,0.72), moyen=vec3(0.12,0.46,0.58), fond=vec3(0.04,0.18,0.3);\n'+
+    ' diffuseColor.rgb=mix(mix(peu,moyen,smoothstep(0.0,0.25,prof)),fond,smoothstep(0.25,0.9,prof));\n'+
+    ' diffuseColor.a=mix(0.38,0.88,smoothstep(0.0,0.45,prof));\n'+
+    /* écume le long des rivages : elle respire avec les vagues */
+    ' float vag=sin(vMondeE.x*5.3+uT*1.6)*sin(vMondeE.z*4.7-uT*1.2)*0.5+0.5;\n'+
+    ' float ec=(1.0-smoothstep(0.0,0.07+0.04*sin(uT*1.3+vMondeE.x*0.7),prof))*(0.55+0.45*vag);\n'+
+    ' ec+=smoothstep(0.86,0.98,vag)*0.18*(1.0-smoothstep(0.0,0.3,prof));\n'+
+    ' diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.94,0.97,0.98),clamp(ec,0.0,1.0)*0.9);\n'+
+    ' diffuseColor.a=max(diffuseColor.a,clamp(ec,0.0,1.0)*0.95);')
+    .replace('#include <emissivemap_fragment>',
+    '#include <emissivemap_fragment>\n'+
+    /* reflet du ciel, plus fort quand on regarde l'eau de biais */
+    ' float fres=pow(1.0-abs(dot(normalize(normal),normalize(vViewPosition))),3.0);\n'+
+    ' totalEmissiveRadiance+=uCiel*fres*0.45;');
+};
+eau.material.needsUpdate=true;
+
+/* --- le ciel : dégradé du zénith à l'horizon, disque du soleil, étoiles la nuit --- */
+const uCiel={uZenith:{value:new T3.Color(0x4f86c6)},uHorizon:{value:new T3.Color(0xb8d0dc)},uSoleil:{value:new T3.Vector3(0,1,0)},
+  uCoulSoleil:{value:new T3.Color(0xfff2d8)},uNuit:{value:0}};
+const ciel=new T3.Mesh(new T3.SphereGeometry(95,32,16),new T3.ShaderMaterial({
+  uniforms:uCiel, side:T3.BackSide, depthWrite:false, fog:false,
+  vertexShader:'varying vec3 vDir; void main(){ vDir=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+  fragmentShader:'uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uSoleil; uniform vec3 uCoulSoleil; uniform float uNuit; varying vec3 vDir;\n'+
+    'float h(vec3 p){ return fract(sin(dot(p,vec3(12.9898,78.233,45.164)))*43758.5453); }\n'+
+    'void main(){ vec3 d=normalize(vDir); float y=max(d.y,0.0);\n'+
+    ' vec3 c=mix(uHorizon,uZenith,pow(y,0.55));\n'+
+    ' float s=max(dot(d,normalize(uSoleil)),0.0);\n'+
+    ' c+=uCoulSoleil*(pow(s,600.0)*2.5+pow(s,12.0)*0.25)*(1.0-uNuit);\n'+
+    ' vec3 q=floor(d*180.0); float e=step(0.9975,h(q))*smoothstep(0.05,0.3,y);\n'+
+    ' c+=vec3(e)*uNuit*(0.6+0.4*sin(h(q+1.0)*60.0));\n'+
+    ' gl_FragColor=vec4(c,1.0); }'
+}));
+ciel.renderOrder=-10; ciel.frustumCulled=false; scene.add(ciel);
+const zJour=new T3.Color(0x4f86c6), zNuit=new T3.Color(0x03060e), zCreps=new T3.Color(0x6a5a8a);
+function majCiel(nn,creps,grotte){
+  ciel.position.copy(cam.position);
+  ciel.visible=!grotte;
+  uCiel.uHorizon.value.copy(scene.fog.color);
+  uCiel.uZenith.value.copy(zJour).lerp(zNuit,nn).lerp(zCreps,creps*0.35);
+  uCiel.uSoleil.value.copy(soleil.position).sub(soleil.target.position).normalize();
+  uCiel.uCoulSoleil.value.copy(soleil.color);
+  uCiel.uNuit.value=nn;
+  uEau.uCiel.value.copy(scene.fog.color);
+}
+
+/* --- passe cinéma : lueurs, étalonnage, vignette, lissage des bords --- */
+let composer=null, passeBloom=null, passeFxaa=null, passeGrade=null;
+const GradeShader={
+  uniforms:{tDiffuse:{value:null},uSat:{value:1.12},uContraste:{value:1.06},uChaud:{value:new T3.Vector3(1.03,1.0,0.96)},uVignette:{value:0.32},uT:{value:0}},
+  vertexShader:'varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
+  fragmentShader:'uniform sampler2D tDiffuse; uniform float uSat; uniform float uContraste; uniform vec3 uChaud; uniform float uVignette; uniform float uT; varying vec2 vUv;\n'+
+    'void main(){ vec4 t=texture2D(tDiffuse,vUv); vec3 c=t.rgb;\n'+
+    ' float l=dot(c,vec3(0.299,0.587,0.114)); c=mix(vec3(l),c,uSat);\n'+
+    ' c=(c-0.5)*uContraste+0.5; c*=uChaud;\n'+
+    ' vec2 d=vUv-0.5; c*=1.0-uVignette*dot(d,d)*1.6;\n'+
+    ' c+=(fract(sin(dot(vUv*vec2(731.0,617.0)+uT,vec2(12.9898,78.233)))*43758.5453)-0.5)*0.012;\n'+
+    ' gl_FragColor=vec4(clamp(c,0.0,1.0),t.a); }'
+};
+function creerComposer(){
+  if(!T3.EffectComposer||!T3.RenderPass||!T3.ShaderPass) return;
+  try{
+    composer=new T3.EffectComposer(rend);
+    composer.addPass(new T3.RenderPass(scene,cam));
+    if(T3.UnrealBloomPass){ passeBloom=new T3.UnrealBloomPass(new T3.Vector2(256,256),0.42,0.55,0.8); composer.addPass(passeBloom); }
+    passeGrade=new T3.ShaderPass(GradeShader); composer.addPass(passeGrade);
+    if(T3.FXAAShader){ passeFxaa=new T3.ShaderPass(T3.FXAAShader); composer.addPass(passeFxaa); }
+    redimComposer();
+  }catch(e){ composer=null; }
+}
+function redimComposer(){
+  if(!composer) return;
+  const r=stage.getBoundingClientRect(), pr=rend.getPixelRatio();
+  composer.setPixelRatio(pr); composer.setSize(Math.max(1,r.width),Math.max(1,r.height));
+  if(passeFxaa) passeFxaa.material.uniforms.resolution.value.set(1/(Math.max(1,r.width)*pr),1/(Math.max(1,r.height)*pr));
+}
+new ResizeObserver(redimComposer).observe(stage);
+creerComposer();
+function rendreImage(dt,nn){
+  if(composer&&qualite<2){
+    if(passeBloom){ passeBloom.enabled=qualite===0; passeBloom.strength=0.32+nn*0.35; }
+    passeGrade.uniforms.uT.value=(passeGrade.uniforms.uT.value+dt)%100;
+    composer.render(dt);
+  } else rend.render(scene,cam);
+}
 
 /* ---------- caméra ---------- */
 let dist=12, distCible=12;
@@ -11979,7 +12418,9 @@ function rendre(dt){
   tCoul+=dt||0.016; tDecor+=dt||0.016;
   if(tCoul>2){ tCoul=0; majCouleursSol(); }
   const tx=(S.j.x/TS)|0, tz=(S.j.y/TS)|0;
-  if(tx!==derTx||tz!==derTz||tDecor>0.4){ tDecor=0; construireDecor(); }
+  /* le décor ne se reconstruit que si l'on change de case ou si le monde a changé
+     (les signaux du jeu remettent derTx à -1) ; un filet de sécurité toutes les 4 s */
+  if(tx!==derTx||tz!==derTz||tDecor>4){ tDecor=0; construireDecor(); }
 
   /* lumière */
   const X=S.j.x/TS, Z=S.j.y/TS, hJ=solEn(X,Z);
@@ -12161,7 +12602,9 @@ function rendre(dt){
   cam.lookAt(X,hJ+0.4,Z);
   uCamP.value.copy(cam.position); uJoueurP.value.set(X,hJ,Z);
   majMeteo(S,DT,X,Z,hJ,nn,grotte);
-  rend.render(scene,cam);
+  majCiel(nn,creps,grotte);
+  uEau.uT.value+=DT;
+  rendreImage(DT,nn);
   majFlots(S);
 }
 /* textes flottants (dégâts, butin, noms) : posés en HTML au-dessus de la scène,
@@ -12221,6 +12664,8 @@ window.addEventListener('keydown',function(e){
 const ast=document.getElementById('astuce');
 if(ast) ast.insertAdjacentHTML('beforeend','<br><kbd>V</kbd> vue 2D/3D · <kbd>molette</kbd> zoom<br><kbd>clic droit</kbd> glisser : tourner la vue');
 vue.meteo=meteo; vue.evenement=evenement;
+/* outils de mesure (tests) */
+vue.debug={rend:rend,scene:scene,soleil:soleil,qualite:function(q){ appliquerQualite(q); },composer:function(on){ if(!on) composer=null; else creerComposer(); },decor:function(){ const t0=performance.now(); construireDecor(); return performance.now()-t0; }};
 /* réglages de caméra accessibles (tests, captures) */
 vue.camera=function(d,inclinaison,tour){ if(d!=null) distCible=d; if(inclinaison!=null) tangCible=inclinaison; if(tour!=null) yawCible=tour; };   /* pour forcer un temps en test : __vue3d.meteo.type='orage' */
 window.__vue3d=vue; appliquer();
