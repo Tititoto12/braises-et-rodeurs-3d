@@ -9527,7 +9527,7 @@ const stage=document.getElementById('stage'), cv=document.getElementById('cv');
 
 /* ---------- moteur ---------- */
 const rend=new T3.WebGLRenderer({antialias:true});
-rend.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5));
+rend.setPixelRatio(Math.min(window.devicePixelRatio||1,1.25));
 rend.shadowMap.enabled=true; rend.shadowMap.type=T3.PCFSoftShadowMap;
 /* rendu filmique : les hautes lumières (feux, soleil couchant) s'arrondissent au lieu de cramer */
 rend.toneMapping=T3.ACESFilmicToneMapping; rend.toneMappingExposure=1.25;
@@ -9540,11 +9540,12 @@ scene.fog=new T3.Fog(0xa9c1c9,22,52);
 const hemi=new T3.HemisphereLight(0xdfe8f0,0x3a4a2a,0.9); scene.add(hemi);
 const soleil=new T3.DirectionalLight(0xfff1d6,1.0);
 soleil.castShadow=true; soleil.shadow.mapSize.set(2048,2048);
-const sc=soleil.shadow.camera; sc.left=-22; sc.right=22; sc.top=22; sc.bottom=-22; sc.near=1; sc.far=80;
+const sc=soleil.shadow.camera; sc.left=-18; sc.right=18; sc.top=18; sc.bottom=-18; sc.near=1; sc.far=70;
 soleil.shadow.bias=-0.0006; soleil.shadow.normalBias=0.025;   /* évite l'acné d'ombre sur les petites pièces */
 scene.add(soleil); scene.add(soleil.target);
 const torche=new T3.PointLight(0xffb060,0,9,1.6); scene.add(torche);
-const feuxL=[]; for(let k=0;k<6;k++){ const l=new T3.PointLight(0xff8a3a,0,10,1.6); scene.add(l); feuxL.push(l); }
+/* trois lumières de feu suffisent (les plus proches) : chaque lumière en plus coûte sur chaque pixel */
+const feuxL=[]; for(let k=0;k<3;k++){ const l=new T3.PointLight(0xff8a3a,0,10,1.6); scene.add(l); feuxL.push(l); }
 
 function redim(){
   const r=stage.getBoundingClientRect();
@@ -9991,10 +9992,10 @@ const uVent={value:0};
 function avecVent(m,force){
   m.onBeforeCompile=function(sh){
     sh.uniforms.uVent=uVent;
-    sh.vertexShader='uniform float uVent;\n'+sh.vertexShader.replace('#include <begin_vertex>',
+    sh.vertexShader='uniform float uVent;\nattribute float aVent;\n'+sh.vertexShader.replace('#include <begin_vertex>',
       '#include <begin_vertex>\n#ifdef USE_INSTANCING\n'+
       'vec3 ip=vec3(instanceMatrix[3][0],instanceMatrix[3][1],instanceMatrix[3][2]);\n'+
-      'float ph=ip.x*0.71+ip.z*0.93;\n float hh=max(0.0,position.y+0.5);\n'+
+      'float ph=ip.x*0.71+ip.z*0.93;\n float hh=aVent;\n'+
       'transformed.x+=(sin(uVent*1.3+ph)+0.4*sin(uVent*3.1+ph*2.0))*'+force.toFixed(3)+'*hh;\n'+
       'transformed.z+=cos(uVent*1.05+ph*1.3)*'+(force*0.7).toFixed(3)+'*hh;\n#endif');
   };
@@ -10411,20 +10412,71 @@ function ventPiece(nom,k,p){
 }
 const CAPS={herbe:5200};
 const CAP=2600;
-const inst={};
+const inst={}, partInfo={};
 const qPart={};
 const eTmp=new T3.Euler();
+/* Optimisation : toutes les pièces d'un modèle qui partagent le même matériau sont
+   fusionnées en une seule géométrie (couleurs de pièces gardées dans les sommets).
+   Un chêne passe de cinq dessins à deux, une maison de trente à quatre ou cinq. */
+const matDecorVC={};
+function matDecorFusion(tex,emis,vent){
+  const k=(tex||'-')+'|'+(emis||'')+'|'+(vent||0);
+  if(matDecorVC[k]) return matDecorVC[k];
+  const m=matDecor(tex,emis,vent).clone();
+  m.vertexColors=true;
+  if(tex==='fenetre'){ m.emissiveMap=TEX_OBJ.fenetre; fenetres.push(m); }
+  if(vent) avecVent(m,vent);
+  avecDecoupe(m,vent||0);
+  return matDecorVC[k]=m;
+}
+const m4F=new T3.Matrix4(), m3F=new T3.Matrix3(), vF3=new T3.Vector3(), qF=new T3.Quaternion(), sF=new T3.Vector3();
+function fusionnerPieces(nom,liste){
+  const P=[],N=[],U=[],C=[],V=[];
+  liste.forEach(function(it){
+    const p=it.p, k=it.k;
+    let g=GEO[p[0]]; g=g.index?g.toNonIndexed():g;
+    const q0=qPart[nom][k]||((COUCHE[nom]&&COUCHE[nom][k])?qc:null);
+    qF.set(0,0,0,1); if(q0) qF.copy(q0);
+    m4F.compose(vF3.set(p[2][0],p[2][1],p[2][2]),qF,sF.set(p[3][0],p[3][1],p[3][2]));
+    m3F.getNormalMatrix(m4F);
+    const pos=g.attributes.position, nor=g.attributes.normal, uv=g.attributes.uv;
+    const col=new T3.Color(p[1]); if(texPiece(nom,k,p)) col.multiplyScalar(1.1);
+    for(let i=0;i<pos.count;i++){
+      vF3.fromBufferAttribute(pos,i); const yLoc=vF3.y;
+      vF3.applyMatrix4(m4F); P.push(vF3.x,vF3.y,vF3.z);
+      if(nor){ vF3.fromBufferAttribute(nor,i).applyMatrix3(m3F).normalize(); N.push(vF3.x,vF3.y,vF3.z); } else N.push(0,1,0);
+      if(uv) U.push(uv.getX(i),uv.getY(i)); else U.push(0,0);
+      C.push(col.r,col.g,col.b);
+      V.push(Math.max(0,yLoc+0.5));   /* hauteur dans la pièce : sert au balancement du vent */
+    }
+  });
+  const g=new T3.BufferGeometry();
+  g.setAttribute('position',new T3.Float32BufferAttribute(P,3));
+  g.setAttribute('normal',new T3.Float32BufferAttribute(N,3));
+  g.setAttribute('uv',new T3.Float32BufferAttribute(U,2));
+  g.setAttribute('color',new T3.Float32BufferAttribute(C,3));
+  g.setAttribute('aVent',new T3.Float32BufferAttribute(V,1));
+  return g;
+}
 for(const nom in MOD){
   qPart[nom]=MOD[nom].map(function(p){ return p[5]?new T3.Quaternion().setFromEuler(eTmp.set(p[5][0],p[5][1],p[5][2])):null; });
-  inst[nom]=MOD[nom].map(function(p,k){
-    /* les bâtiments sont rares autour du joueur : inutile de leur réserver autant de place */
-    const cap=CAPS[nom]||((ORGA[nom]||PETIT[nom])?CAP:500);
-    const m=new T3.InstancedMesh(GEO[p[0]],matDecor(texPiece(nom,k,p),p[4],ventPiece(nom,k,p)),cap);
+  partInfo[nom]=MOD[nom].map(function(p,k){ return {mat:matDecor(texPiece(nom,k,p),p[4],ventPiece(nom,k,p)),base:new T3.Color(p[1])}; });
+  /* regroupement par matériau */
+  const groupes={};
+  MOD[nom].forEach(function(p,k){
+    const tex=texPiece(nom,k,p), vent=ventPiece(nom,k,p), cle=(tex||'-')+'|'+(p[4]||'')+'|'+vent;
+    (groupes[cle]||(groupes[cle]={tex:tex,em:p[4],vent:vent,liste:[],ombre:false})).liste.push({p:p,k:k});
+    if(!PETIT[nom]&&Math.max(p[3][0],p[3][1],p[3][2])>0.14) groupes[cle].ombre=true;
+  });
+  /* les bâtiments sont rares autour du joueur : inutile de leur réserver autant de place */
+  const cap=CAPS[nom]||((ORGA[nom]||PETIT[nom])?CAP:500);
+  inst[nom]=Object.keys(groupes).map(function(cle){
+    const G=groupes[cle];
+    const m=new T3.InstancedMesh(fusionnerPieces(nom,G.liste),matDecorFusion(G.tex,G.em,G.vent),cap);
     m.instanceColor=new T3.InstancedBufferAttribute(new Float32Array(cap*3).fill(1),3);
     m.instanceColor.setUsage(T3.DynamicDrawUsage);
-    m.userData.base=new T3.Color(p[1]); m.userData.cap=cap;
-    /* les toutes petites pièces (fleurs, vitres, clous) ne projettent pas d'ombre : invisible, et ça coûte */
-    m.count=0; m.castShadow=!PETIT[nom]&&Math.max(p[3][0],p[3][1],p[3][2])>0.14; m.receiveShadow=true; m.frustumCulled=false;
+    m.userData.cap=cap;
+    m.count=0; m.castShadow=G.ombre; m.receiveShadow=true; m.frustumCulled=false; m.visible=false;
     m.instanceMatrix.setUsage(T3.DynamicDrawUsage);
     scene.add(m); return m;
   });
@@ -10458,23 +10510,20 @@ const UN=[1,1,1];
 /* les modèles refaits sont dessinés directement à la bonne taille : plus d'étirement après coup */
 ['maison','maisonB','tour','donjon','muraille','mur','palis','porte','forge','tente','banniere','mat','menhir','pilier','ruine','chariot','caisses','foin','coffre','quintaine','ratelier','panneau'].forEach(function(n){ delete ECH_MOD[n]; });
 function poserModele(nom,px,pz,h,rot,ech,v,teinte){
-  const pieces=MOD[nom], mm=inst[nom], qp=qPart[nom], em=ECH_MOD[nom]||UN;
+  const mm=inst[nom], em=ECH_MOD[nom]||UN;
   q.setFromAxisAngle(axeY,rot||0); ech=ech||1;
   const org=ORGA[nom];
-  const dl=org?(((v*37)%23)/23-0.5)*0.14:0, dh=org?(((v*53)%17)/17-0.5)*0.05:0, ds=org?(((v*29)%13)/13-0.5)*0.12:0;
-  for(let k=0;k<pieces.length;k++){
+  /* une seule matrice par groupe : les pièces sont déjà placées dans la géométrie fusionnée */
+  vp.set(px,h,pz); vs.set(ech*em[0],ech*em[1],ech*em[2]);
+  mx.compose(vp,q,vs);
+  if(teinte) cTmp.copy(teinte);
+  else if(org){
+    /* nuance propre à chaque arbre ou rocher : un peu plus clair, un peu plus chaud ou plus froid */
+    const dl=(((v*37)%23)/23-0.5)*0.22, dh=(((v*53)%17)/17-0.5)*0.12;
+    cTmp.setRGB((1+dl)*(1+dh),1+dl,(1+dl)*(1-dh));
+  } else cTmp.setRGB(1,1,1);
+  for(let k=0;k<mm.length;k++){
     const m=mm[k]; if(m.count>=m.userData.cap) continue;
-    const p=pieces[k];
-    vp.set(p[2][0]*ech*em[0],p[2][1]*ech*em[1],p[2][2]*ech*em[2]).applyQuaternion(q);
-    vp.x+=px; vp.y+=h; vp.z+=pz;
-    vs.set(p[3][0]*ech*em[0],p[3][1]*ech*em[1],p[3][2]*ech*em[2]);
-    let qq=q;
-    if(qp[k]){ qq2.copy(q).multiply(qp[k]); qq=qq2; }
-    else if(COUCHE[nom]&&COUCHE[nom][k]){ qq2.copy(q).multiply(qc); qq=qq2; }
-    mx.compose(vp,qq,vs);
-    cTmp.copy(teinte||m.userData.base);
-    if(org) cTmp.offsetHSL(dh,ds,dl);
-    if(m.material.map) cTmp.multiplyScalar(1.1);
     m.setColorAt(m.count,cTmp);
     m.setMatrixAt(m.count++,mx);
   }
@@ -10707,6 +10756,31 @@ function construireArme(type){
 }
 function me(geo,m,px,py,pz,sx,sy,sz,parent){ const o=new T3.Mesh(geo,m); o.position.set(px,py,pz); o.scale.set(sx,sy,sz); o.castShadow=true; parent.add(o); return o; }
 function piv(px,py,pz,parent){ const g=new T3.Group(); g.position.set(px,py,pz); parent.add(g); return g; }
+/* Optimisation : fusionne en un seul maillage les pièces fixes d'un même membre qui
+   partagent un matériau (le crâne, le nez et les oreilles ; l'avant-bras et la main...).
+   Un personnage passe d'une quarantaine de dessins à une vingtaine. */
+const vFus=new T3.Vector3(), n3Fus=new T3.Matrix3();
+function fusionnerEnfants(parent,matOuListe,ombre){
+  const liste=Array.isArray(matOuListe)?matOuListe.filter(Boolean):parent.children.filter(function(c){ return c.isMesh&&c.material===matOuListe; });
+  if(liste.length<2){ if(ombre===false) liste.forEach(function(m){ m.castShadow=false; }); return liste[0]||null; }
+  const P=[],N=[],U=[];
+  liste.forEach(function(m){
+    m.updateMatrix(); n3Fus.getNormalMatrix(m.matrix);
+    const g=m.geometry.index?m.geometry.toNonIndexed():m.geometry, pos=g.attributes.position, nor=g.attributes.normal, uv=g.attributes.uv;
+    for(let i=0;i<pos.count;i++){
+      vFus.fromBufferAttribute(pos,i).applyMatrix4(m.matrix); P.push(vFus.x,vFus.y,vFus.z);
+      vFus.fromBufferAttribute(nor,i).applyMatrix3(n3Fus).normalize(); N.push(vFus.x,vFus.y,vFus.z);
+      if(uv) U.push(uv.getX(i),uv.getY(i)); else U.push(0,0);
+    }
+    parent.remove(m);
+  });
+  const g=new T3.BufferGeometry();
+  g.setAttribute('position',new T3.Float32BufferAttribute(P,3));
+  g.setAttribute('normal',new T3.Float32BufferAttribute(N,3));
+  g.setAttribute('uv',new T3.Float32BufferAttribute(U,2));
+  const f=new T3.Mesh(g,liste[0].material); f.castShadow=ombre!==false; parent.add(f);
+  return f;
+}
 
 /* ---------- humain ---------- */
 function creerHumain(){
@@ -10772,6 +10846,15 @@ function creerHumain(){
     j.userData.genou=genou;
     if(c<0) u.jambeG=j; else u.jambeD=j;
   });
+  /* fusion des pièces fixes et tri des ombres */
+  fusionnerEnfants(tete,M.peau);
+  u.blancs=fusionnerEnfants(tete,[u.blancG,u.blancD],false);
+  u.pupilles=fusionnerEnfants(tete,[u.oeilG,u.oeilD],false);
+  u.sourcils=fusionnerEnfants(tete,[u.sourcilG,u.sourcilD],false);
+  [u.bouche,u.boucle,u.cou,u.nasal,u.corneG,u.corneD,u.pointe].forEach(function(m){ m.castShadow=false; });
+  const tj=fusionnerEnfants(haut,[u.torse,u.jupe]); u.torse=tj; u.jupe=tj;
+  [u.brasG,u.brasD].forEach(function(b){ fusionnerEnfants(b.userData.coude,M.peau); b.children[0].castShadow=false; });
+  [u.jambeG,u.jambeD].forEach(function(j){ fusionnerEnfants(j.userData.genou,M.bottes); });
   g.userData=u; scene.add(g); return g;
 }
 
@@ -10833,6 +10916,11 @@ function creerQuadrupede(esp){
   else if(P.queue==='pompon'){ me(G2.sph,M.peau,0,0,-P.r*0.15,P.r*0.8,P.r*0.8,P.r*0.8,q); }
   else if(P.queue==='fine'){ me(G2.cyl,M.corps,0,0,-P.L*0.15,P.r*0.12,P.r*0.12,P.L*0.3,q); q.children[0].rotation.x=Math.PI/2; q.rotation.x=0.8; }
   else { me(G2.sph,M.corps,0,0,-P.r*0.25,P.r*0.45,P.r*0.35,P.r*0.6,q); }
+  /* fusion : corps en un morceau, tête et oreilles en un autre, patte et sabot ensemble */
+  fusionnerEnfants(corps,M.corps);
+  fusionnerEnfants(tete,M.corps);
+  fusionnerEnfants(tete,[u.oeilG,u.oeilD],false);
+  pattes.forEach(function(p){ fusionnerEnfants(p.userData.genou,M.jambes); });
   g.userData=u; scene.add(g); return g;
 }
 
@@ -10971,6 +11059,10 @@ function poser(f,e,forme,look,taille,o,dt){
 }
 function animerHumain(u,f,look,o,ph,v,T){
   const c=look.carrure||1;
+  /* au loin, les détails du visage ne se voient pas : on ne les dessine pas */
+  const proche=f.position.distanceToSquared(cam.position)<110;
+  vis(u.blancs,proche); vis(u.sourcils,proche); vis(u.bouche,proche); vis(u.boucle,proche);
+  vis(u.pupilles,proche||look.lueur);
   /* silhouette : carrure, coiffe, barbe, sac */
   u.torse.scale.set(c,1,c); u.jupe.scale.set(c,1,c); u.ceinture.scale.set(0.25*c,0.035,0.18*c);
   u.brasG.position.x=-0.165*c; u.brasD.position.x=0.165*c;
@@ -11122,6 +11214,10 @@ function creerNavire(type){
     cd.quaternion.setFromUnitVectors(new T3.Vector3(0,1,0),b.clone().sub(a).normalize()); }); });
   /* lanterne de poupe */
   me(G2.sph,new T3.MeshBasicMaterial({color:0xffc060}),0,D.Hc+0.62,-D.L*0.48,0.08,0.1,0.08,corps);
+  /* tout ce qui ne bouge pas (coque, mâts, canons, cordages) est fusionné par matériau */
+  const fixes=corps.children.filter(function(c){ return c.isMesh&&u.voiles.indexOf(c)<0&&c!==u.drapeau; });
+  const mats=[]; fixes.forEach(function(c){ if(mats.indexOf(c.material)<0) mats.push(c.material); });
+  mats.forEach(function(m){ const l=fixes.filter(function(c){ return c.material===m; }); const f=fusionnerEnfants(corps,l); if(f&&m===noir) f.castShadow=false; });
   g.userData=u; scene.add(g); return g;
 }
 function poserNavire(f,n,T){
@@ -11162,7 +11258,7 @@ function creerTentacule(n,long,r0,matP,matV,parent){
     const r=r0*(1-k/n*0.85), seg=new T3.Group();
     if(k>0) seg.position.z=l;
     p.add(seg);
-    const m=new T3.Mesh(G2.conique,matP); m.rotation.x=Math.PI/2; m.position.z=l/2; m.scale.set(r*2,l*1.08,r*2); m.castShadow=true; seg.add(m);
+    const m=new T3.Mesh(G2.conique,matP); m.rotation.x=Math.PI/2; m.position.z=l/2; m.scale.set(r*2,l*1.08,r*2); m.castShadow=k<3; seg.add(m);
     if(k%2===0&&k<n-2){ const v=new T3.Mesh(G2.sph,matV); v.position.set(0,-r*0.85,l*0.5); v.scale.set(r*0.75,r*0.3,r*0.75); seg.add(v); }
     segs.push(seg); p=seg;
   }
@@ -11310,17 +11406,24 @@ function petit(){
 /* ---------- effets de combat ----------
    Ces effets ne touchent pas aux règles : ils lisent l'état du jeu et
    réagissent aux changements (un coup reçu, une mort, une esquive). */
-const ets=[], poolEts=[];
+/* Optimisation : toutes les particules sont dessinées en deux lots instanciés
+   (un normal, un lumineux) au lieu d'un objet chacune. */
+const NPART=800;
+function lotParticules(add){
+  const m=new T3.InstancedMesh(GEO.box,new T3.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:add?1:0.78,depthWrite:false,
+    blending:add?T3.AdditiveBlending:T3.NormalBlending}),NPART);
+  m.instanceColor=new T3.InstancedBufferAttribute(new Float32Array(NPART*3),3);
+  m.instanceMatrix.setUsage(T3.DynamicDrawUsage); m.instanceColor.setUsage(T3.DynamicDrawUsage);
+  m.frustumCulled=false; m.count=0; scene.add(m); return m;
+}
+const lotNormal=lotParticules(false), lotLum=lotParticules(true), lotJeu=lotParticules(false);
+lotJeu.material.opacity=1; lotJeu.material.transparent=false; lotJeu.material.depthWrite=true;
+const ets=[], cPart=new T3.Color(), mPart=new T3.Matrix4(), qPart2=new T3.Quaternion(), ePart=new T3.Euler(), pPart=new T3.Vector3(), sPart=new T3.Vector3();
 function etincelle(x,y,z,vx,vy,vz,c,s,vie,grav,add){
-  if(ets.length>420) return;
-  let p=poolEts.pop();
-  if(!p){ const m=new T3.Mesh(GEO.box,new T3.MeshBasicMaterial({color:0xffffff,transparent:true,depthWrite:false})); scene.add(m); p={m:m}; }
-  p.m.visible=true; p.m.position.set(x,y,z);
-  p.m.material.color.set(c); p.m.material.opacity=1;
-  p.m.material.blending=add?T3.AdditiveBlending:T3.NormalBlending;
-  p.m.rotation.set(Math.random()*3,Math.random()*3,Math.random()*3);
-  p.vx=vx; p.vy=vy; p.vz=vz; p.vie=vie; p.vie0=vie; p.s=s; p.grav=(grav===undefined)?9:grav;
-  ets.push(p);
+  if(ets.length>=NPART*2-8) return;
+  cPart.set(c);
+  ets.push({x:x,y:y,z:z,vx:vx,vy:vy,vz:vz,r:cPart.r,g:cPart.g,b:cPart.b,s:s,vie:vie,vie0:vie,
+    grav:(grav===undefined)?9:grav,add:!!add,rx:Math.random()*3,ry:Math.random()*3});
 }
 function gerbe(x,y,z,n,couls,force,s,vie,grav,add,haut){
   for(let k=0;k<n;k++){
@@ -11337,20 +11440,28 @@ function onde(x,y,z,c,r0,r1,vie,op){
   o.r0=r0; o.r1=r1; o.t=0; o.vie=vie; o.op=op||0.85; ondes.push(o);
 }
 function majParticules(dt){
+  let nN=0, nL=0;
   for(let k=ets.length-1;k>=0;k--){
     const p=ets[k]; p.vie-=dt;
-    if(p.vie<=0){ p.m.visible=false; poolEts.push(p); ets.splice(k,1); continue; }
-    const m=p.m;
-    p.vy-=p.grav*dt;
-    m.position.x+=p.vx*dt; m.position.y+=p.vy*dt; m.position.z+=p.vz*dt;
-    const sol=solEn(m.position.x,m.position.z);
-    if(m.position.y<sol+0.02){ m.position.y=sol+0.02; p.vy*=-0.3; p.vx*=0.55; p.vz*=0.55; }
+    if(p.vie<=0){ ets[k]=ets[ets.length-1]; ets.pop(); continue; }
+    p.vy-=p.grav*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.z+=p.vz*dt;
+    const sol=solEn(p.x,p.z);
+    if(p.y<sol+0.02){ p.y=sol+0.02; p.vy*=-0.3; p.vx*=0.55; p.vz*=0.55; }
     p.vx*=(1-1.2*dt); p.vz*=(1-1.2*dt);
-    const f=p.vie/p.vie0;
-    m.scale.setScalar(p.s*Math.sqrt(f));
-    m.material.opacity=Math.min(1,f*1.6);
-    m.rotation.x+=dt*4; m.rotation.y+=dt*3;
+    p.rx+=dt*4; p.ry+=dt*3;
+    const f=p.vie/p.vie0, lot=p.add?lotLum:lotNormal, idx=p.add?nL:nN;
+    if(idx>=NPART) continue;
+    const s=p.s*Math.sqrt(f);
+    qPart2.setFromEuler(ePart.set(p.rx,p.ry,0));
+    mPart.compose(pPart.set(p.x,p.y,p.z),qPart2,sPart.set(s,s,s));
+    lot.setMatrixAt(idx,mPart);
+    /* les lueurs s'éteignent en fondant au noir (invisible en mode lumineux) */
+    const b=p.add?Math.min(1,f*1.6):1; cPart.setRGB(p.r*b,p.g*b,p.b*b); lot.setColorAt(idx,cPart);
+    if(p.add) nL++; else nN++;
   }
+  lotNormal.count=nN; lotLum.count=nL;
+  lotNormal.instanceMatrix.needsUpdate=lotLum.instanceMatrix.needsUpdate=true;
+  lotNormal.instanceColor.needsUpdate=lotLum.instanceColor.needsUpdate=true;
   for(let k=ondes.length-1;k>=0;k--){
     const o=ondes[k]; o.t+=dt;
     const f=o.t/o.vie;
@@ -11575,8 +11686,9 @@ function modeleMesh(nom,i){
   const v=J.varObj?J.varObj[i]:0, org=ORGA[nom], ech=org?0.82+(v%37)/100:1, rot=org?v*0.37:0;
   const g=new T3.Group(), mats=[];
   MOD[nom].forEach(function(p,k){
-    const im=inst[nom][k], m2=im.material.clone();
-    m2.color.copy(im.userData.base); if(im.material.map) m2.color.multiplyScalar(1.1);
+    const im=partInfo[nom][k], m2=im.mat.clone();
+    m2.vertexColors=false;
+    m2.color.copy(im.base); if(im.mat.map) m2.color.multiplyScalar(1.1);
     mats.push(m2);
     const me=new T3.Mesh(GEO[p[0]],m2);
     me.position.set(p[2][0],p[2][1],p[2][2]); me.scale.set(p[3][0],p[3][1],p[3][2]);
@@ -12207,7 +12319,7 @@ let qualite=0, tMesure=0, nMesure=0, sMesure=0, derFrame=performance.now(), calm
 function appliquerQualite(q){
   qualite=q;
   const dpr=window.devicePixelRatio||1;
-  rend.setPixelRatio(q===0?Math.min(dpr,1.5):q===1?1:0.75);
+  rend.setPixelRatio(q===0?Math.min(dpr,1.25):q===1?1:0.75);
   if(soleil.shadow.map){ soleil.shadow.map.dispose(); soleil.shadow.map=null; }
   soleil.shadow.mapSize.set(q===0?2048:1024,q===0?2048:1024);
   soleil.castShadow=q<2;
@@ -12420,7 +12532,8 @@ function rendre(dt){
   const tx=(S.j.x/TS)|0, tz=(S.j.y/TS)|0;
   /* le décor ne se reconstruit que si l'on change de case ou si le monde a changé
      (les signaux du jeu remettent derTx à -1) ; un filet de sécurité toutes les 4 s */
-  if(tx!==derTx||tz!==derTz||tDecor>4){ tDecor=0; construireDecor(); }
+  /* en marchant, on ne redessine le décor qu'une fois tous les trois pas de case */
+  if(Math.abs(tx-derTx)>=3||Math.abs(tz-derTz)>=3||tDecor>4){ tDecor=0; construireDecor(); }
 
   /* lumière */
   const X=S.j.x/TS, Z=S.j.y/TS, hJ=solEn(X,Z);
@@ -12500,7 +12613,9 @@ function rendre(dt){
     torche:S.torcheOn,pare:!!j.pare&&!enCoup,roule:0,flash:0,pose:poseJoueur},DT);
   const H2=J.HOSTILES;
   nBloc=0;
-  function dansRayon(e){ return Math.abs(e.x/TS-X)<RAYON*1.4&&Math.abs(e.y/TS-Z)<RAYON*1.4; }
+  /* on ne dessine que ce que la caméra peut voir (au-delà, le brouillard l'avale) */
+  const VUE=Math.min(30,14+dist*0.7);
+  function dansRayon(e){ return Math.abs(e.x/TS-X)<VUE&&Math.abs(e.y/TS-Z)<VUE; }
   (S.mobs||[]).forEach(function(m){
     if(!dansRayon(m)) return;
     const d=H2[m.t]||{}, L=LOOK[m.t]||LOOK.defaut;
@@ -12575,16 +12690,20 @@ function rendre(dt){
   if(orbeProche){ lumOrbe.position.copy(orbeProche.position); lumOrbe.intensity=1.6; } else lumOrbe.intensity=0;
   /* étincelles et poussières du jeu : leur hauteur à l'écran devient une vraie hauteur */
   const parts=S.parts||[];
-  for(let k=0;k<parts.length&&nPt<260;k++){
+  /* étincelles du jeu : un seul lot instancié */
+  let nJ=0;
+  for(let k=0;k<parts.length&&nJ<NPART;k++){
     const p=parts[k]; if(p.x===undefined) continue;
-    const m=petit(), ax=p.x/TS, az=p.y/TS;
+    const ax=p.x/TS, az=p.y/TS;
     const vie=p.v0?Math.max(0,Math.min(1,p.v/p.v0)):1;
-    m.position.set(ax,solEn(ax,az)+0.35+(1-vie)*0.5,az);
-    m.rotation.set(vie*4,vie*3,0);
-    const s=Math.max(0.03,(p.s||p.r||2)/TS*1.5*(0.4+vie*0.6)); m.scale.set(s,s,s);
-    m.material.color.set(nomCouleur(p.c||p.col||p.coul,'#e8c87a'));
+    const s=Math.max(0.03,(p.s||p.r||2)/TS*1.5*(0.4+vie*0.6));
+    qPart2.setFromEuler(ePart.set(vie*4,vie*3,0));
+    mPart.compose(pPart.set(ax,solEn(ax,az)+0.35+(1-vie)*0.5,az),qPart2,sPart.set(s,s,s));
+    lotJeu.setMatrixAt(nJ,mPart);
+    cPart.set(nomCouleur(p.c||p.col||p.coul,'#e8c87a')); lotJeu.setColorAt(nJ,cPart);
+    nJ++;
   }
-  for(let k=nPt;k<petits.length;k++) petits[k].visible=false;
+  lotJeu.count=nJ; lotJeu.instanceMatrix.needsUpdate=true; if(lotJeu.instanceColor) lotJeu.instanceColor.needsUpdate=true;
   majEffets(S,DT,X,Z,hJ);
   majAnims(S,DT,X,Z,hJ);
 
