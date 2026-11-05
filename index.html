@@ -538,14 +538,15 @@ const ARBRE=1, ROCHER=2, BUISSON=3, BUISSON_VIDE=4, SILEX=5, FEU=6, MUR=7, HAUTE
       MAISON=17, OCCUPE=18, PUITS=19, ETAL=20, PALIS=21, PORTE=22, TENTE=23, PANNEAU=24,
       MURAILLE=25, TOUR=26, DONJON=27, PORTAIL=28, BANNIERE=29, FORGE=30,
       QUINTAINE=31, RATELIER=32, CAISSES=33, FOIN=34, CHARIOT=35,
-      FOYER=36, PILIER=37, OSSUAIRE=38, MAT=39;
+      FOYER=36, PILIER=37, OSSUAIRE=38, MAT=39,
+      CASERNE=40, ECURIE=41, ATELIER=42, CHAPELLE=43, CANON=44;
 /* objets qui bloquent le passage */
 /* nom d'objet → constante, pour que les recettes disent ce qu'elles plantent */
 const OBJ_NOM={MUR:MUR,PALIS:PALIS,PORTAIL:PORTAIL,TOUR:TOUR,DONJON:DONJON,BANNIERE:BANNIERE,FEU:FEU,PONT:PONT};
 const SOLIDES={1:1,2:1,6:1,7:1,11:1,12:1,14:1,17:1,18:1,19:1,20:1,21:1,23:1,24:1,25:1,26:1,27:1,29:1,30:1,
-  31:1,32:1,33:1,34:1,35:1,36:1,37:1};
+  31:1,32:1,33:1,34:1,35:1,36:1,37:1,40:1,41:1,42:1,43:1,44:1};
 /* objets qui arrêtent une flèche */
-const OPAQUES={1:1,2:1,7:1,11:1,12:1,14:1,17:1,18:1,21:1,23:1,25:1,26:1,27:1,33:1,34:1,35:1,37:1};
+const OPAQUES={1:1,2:1,7:1,11:1,12:1,14:1,17:1,18:1,21:1,23:1,25:1,26:1,27:1,33:1,34:1,35:1,37:1,40:1,41:1,42:1,43:1};
 
 /* --- bestiaire hostile --- */
 /* les bandits ne viennent pas de la nuit, mais de leurs camps */
@@ -1745,6 +1746,14 @@ function batirChateau(cx,cy,clan,R){
   placer(-3,-5,CAISSES);
   placer(3,-5,CAISSES);
   placer(2,5,CHARIOT);
+  /* la vie d'une garnison : caserne, écurie, atelier de siège, chapelle,
+     et des canons tournés vers l'extérieur aux quatre coins de la cour */
+  placer(2,1,CASERNE,clan); placer(3,1,CASERNE,clan);
+  placer(-3,2,ECURIE,clan); placer(-2,2,ECURIE,clan);
+  placer(3,3,ATELIER,clan);
+  placer(0,-4,CHAPELLE,clan);
+  placer(-(R-1),-2,CANON,clan); placer(R-1,-2,CANON,clan);
+  placer(-(R-1),2,CANON,clan); placer(R-1,2,CANON,clan);
   /* une cache dans le donjon : les seigneurs gardent leur or */
   const ci=(cy-3)*W+(cx+3);
   if(objets[ci]===0){
@@ -6705,6 +6714,228 @@ function majRaids(dt){
   }
 }
 
+/* ====================== sièges ======================
+   Une maison en guerre dresse son camp devant le château ennemi : trébuchets et
+   canons pilonnent l'enceinte, un bélier marche sur le portail. Les canons du
+   château répondent. Les brèches se referment ensuite, pierre après pierre. */
+const ENGINS={
+  trebuchet:{nom:'Trébuchet',pv:40,cd:[7,10],vol:1.9,proj:'pierre',haut:6},
+  canon:{nom:'Canon',pv:26,cd:[4,6.5],vol:0.85,proj:'boulet',haut:1.6},
+  belier:{nom:'Bélier',pv:46,cd:[2.4,2.6]}
+};
+function murDeChateau(o){ return o===MURAILLE||o===TOUR||o===PORTAIL||o===BANNIERE; }
+function anneauChateau(ch){
+  const L=[];
+  for(let oy=-ch.R;oy<=ch.R;oy++) for(let ox=-ch.R;ox<=ch.R;ox++){
+    if(Math.max(Math.abs(ox),Math.abs(oy))!==ch.R) continue;
+    const x=ch.x+ox, y=ch.y+oy;
+    const coin=Math.abs(ox)===ch.R&&Math.abs(oy)===ch.R, porte=(oy===ch.R&&ox===0);
+    L.push({i:y*W+x,x:x,y:y,doit:coin?TOUR:porte?PORTAIL:MURAILLE});
+  }
+  return L;
+}
+function lancerSiege(){
+  S.sieges=S.sieges||[]; S.engins=S.engins||[];
+  if(S.sieges.length||!S.chateaux.length) return;
+  const guerres=[];
+  for(const k in S.rel){
+    const p=k.split('-'), a=+p[0], b=+p[1];
+    if(etatRel(a,b)==='guerre'){ guerres.push([a,b]); guerres.push([b,a]); }
+  }
+  if(!guerres.length) return;
+  /* on assiège de préférence un château que le joueur peut voir */
+  guerres.sort(function(g1,g2){
+    const c1=S.chateaux[g1[1]], c2=S.chateaux[g2[1]];
+    return Math.hypot(c1.x*TS-S.j.x,c1.y*TS-S.j.y)-Math.hypot(c2.x*TS-S.j.x,c2.y*TS-S.j.y);
+  });
+  const g=guerres[Math.random()<0.7?0:Math.floor(Math.random()*guerres.length)];
+  const ch=S.chateaux[g[1]];
+  if(!ch) return;
+  if(Math.hypot(ch.x*TS-S.j.x,ch.y*TS-S.j.y)>70*TS){
+    chronique(CLANS[g[0]].court+' met le siège devant '+ch.nom+', loin d’ici.');
+    return;
+  }
+  /* le camp se dresse face au portail si possible, sinon sur un autre côté */
+  const cotes=[[0,1],[1,0],[-1,0],[0,-1]];
+  let camp=null;
+  for(let k=0;k<cotes.length&&!camp;k++){
+    const d=cotes[k], cx=ch.x+d[0]*(ch.R+7), cy=ch.y+d[1]*(ch.R+7);
+    if(cx<4||cy<4||cx>=W-4||cy>=H-4) continue;
+    if(dur(cx,cy)) continue;
+    camp={x:cx,y:cy,dx:d[0],dy:d[1]};
+  }
+  if(!camp) return;
+  const s={id:(S.t|0)+'-'+g[0],att:g[0],def:g[1],ch:g[1],camp:camp,t:0,duree:120+Math.random()*70,breches:0,porte:0,cdDef:4};
+  S.sieges.push(s);
+  /* les engins : deux trébuchets en retrait, deux canons devant, un bélier face au portail */
+  const px=-camp.dy, py=camp.dx;   /* direction perpendiculaire */
+  const poser=function(type,lat,av){
+    const D=ENGINS[type];
+    const x=(camp.x+px*lat-camp.dx*av)*TS+16, y=(camp.y+py*lat-camp.dy*av)*TS+16;
+    S.engins.push({type:type,x:x,y:y,clan:g[0],siege:s.id,cd:1+Math.random()*4,pv:D.pv,pvMax:D.pv,tir:0,flash:0,mort:0,
+      fx:-camp.dx,fy:-camp.dy});
+  };
+  poser('trebuchet',-3.5,-1.5); poser('trebuchet',3.5,-1.5);
+  poser('canon',-1.6,2.2); poser('canon',1.6,2.2);
+  if(camp.dy===1) poser('belier',0,1);
+  chronique(CLANS[g[0]].nom+' assiège '+ch.nom+'.');
+  if(Math.hypot(ch.x*TS-S.j.x,ch.y*TS-S.j.y)<48*TS){
+    note('Siège ! '+CLANS[g[0]].nom+' dresse ses trébuchets devant '+ch.nom+'.',true);
+    sfx('nuit');
+  }
+}
+function siegeDe(e){ for(let k=0;k<S.sieges.length;k++) if(S.sieges[k].id===e.siege) return S.sieges[k]; return null; }
+function tirer2(x0,y0,tx,ty,type,vol,haut,src,s,i){
+  S.boulets=S.boulets||[];
+  S.boulets.push({x:x0,y:y0,x0:x0,y0:y0,tx:tx,ty:ty,t:0,T:vol,f:0,type:type,haut:haut,src:src,siege:s?s.id:null,i:i});
+}
+function viserMur(ch,e){
+  const L=anneauChateau(ch).filter(function(c){ return murDeChateau(objets[c.i]); });
+  if(!L.length) return null;
+  L.sort(function(a,b){ return Math.hypot(a.x*TS-e.x,a.y*TS-e.y)-Math.hypot(b.x*TS-e.x,b.y*TS-e.y); });
+  return L[Math.floor(Math.random()*Math.min(5,L.length))];
+}
+function impactBoulet(b){
+  const s=b.siege?S.sieges.find(function(q){ return q.id===b.siege; }):null;
+  S.souffles.push({x:b.tx,y:b.ty,r:10,max:b.type==='pierre'?96:72,v:1});
+  gerbe(b.tx,b.ty,'#8a8478',b.type==='pierre'?22:14);
+  emettre('impact',{x:b.tx,y:b.ty,type:b.type,src:b.src});
+  sfx('brise');
+  if(Math.hypot(S.j.x-b.tx,S.j.y-b.ty)<56){ blesser(b.type==='pierre'?18:12,null,b.tx,b.ty); S.j.secousse=Math.max(S.j.secousse,0.8); }
+  else if(Math.hypot(S.j.x-b.tx,S.j.y-b.ty)<10*TS) S.j.secousse=Math.max(S.j.secousse,0.35);
+  if(b.src==='att'){
+    /* la muraille encaisse ; au bout de quelques coups, elle cède */
+    const i=b.i;
+    if(i!==undefined&&murDeChateau(objets[i])){
+      S.degMurs=S.degMurs||{};
+      S.degMurs[i]=(S.degMurs[i]||0)+(b.type==='pierre'?2:1);
+      const seuil=objets[i]===TOUR?8:objets[i]===PORTAIL?6:4;
+      if(S.degMurs[i]>=seuil){
+        const o=objets[i];
+        delete S.degMurs[i];
+        setObj(i,o===TOUR?RUINE:0);
+        if(s){ s.breches++; if(s.breches===1) chronique('Une brèche s’ouvre dans les murs de '+S.chateaux[s.ch].nom+'.'); }
+      }
+    }
+    for(let n=S.pnj.length-1;n>=0;n--){
+      const q=S.pnj[n];
+      if(Math.hypot(q.x-b.tx,q.y-b.ty)>52) continue;
+      q.pv-=b.type==='pierre'?10:7; q.flash=0.16;
+      if(q.pv<=0){ gerbe(q.x,q.y,'#6b3b2a',10); S.pnj.splice(n,1); }
+    }
+  } else {
+    /* les canons du château touchent les engins */
+    for(let n=0;n<S.engins.length;n++){
+      const e=S.engins[n];
+      if(e.mort>0||Math.hypot(e.x-b.tx,e.y-b.ty)>50) continue;
+      e.pv-=b.type==='pierre'?16:11; e.flash=0.2;
+      if(e.pv<=0){ e.mort=2; emettre('engin',{x:e.x,y:e.y,type:e.type});
+        if(Math.hypot(e.x-S.j.x,e.y-S.j.y)<30*TS) flot(e.x,e.y-30,ENGINS[e.type].nom+' détruit','#e8c87a'); }
+    }
+  }
+}
+function finirSiege(s,raison){
+  S.sieges.splice(S.sieges.indexOf(s),1);
+  S.engins.forEach(function(e){ if(e.siege===s.id&&!(e.mort>0)) e.mort=1.5; });
+  const A=CLANS[s.att], ch=S.chateaux[s.ch];
+  if(s.breches>=2||s.porte>=99) chronique(A.court+' a ouvert les murs de '+ch.nom+' avant de se retirer.');
+  else chronique('Le siège de '+ch.nom+' est levé'+(raison==='engins'?' : les engins de '+A.court+' sont en ruine.':'.'));
+  if(Math.hypot(ch.x*TS-S.j.x,ch.y*TS-S.j.y)<48*TS) note('Le siège de '+ch.nom+' prend fin.',true);
+}
+let cdReparer=8;
+function majSieges(dt){
+  S.sieges=S.sieges||[]; S.engins=S.engins||[]; S.boulets=S.boulets||[];
+  if(S.prochainSiege===undefined) S.prochainSiege=60;
+  S.prochainSiege-=dt;
+  if(S.prochainSiege<=0){ S.prochainSiege=110+Math.random()*90; lancerSiege(); }
+  /* projectiles en vol */
+  for(let k=S.boulets.length-1;k>=0;k--){
+    const b=S.boulets[k]; b.t+=dt; b.f=Math.min(1,b.t/b.T);
+    b.x=b.x0+(b.tx-b.x0)*b.f; b.y=b.y0+(b.ty-b.y0)*b.f;
+    if(b.f>=1){ S.boulets.splice(k,1); impactBoulet(b); }
+  }
+  /* engins */
+  for(let k=S.engins.length-1;k>=0;k--){
+    const e=S.engins[k];
+    if(e.flash>0) e.flash-=dt;
+    if(e.mort>0){ e.mort-=dt; if(e.mort<=0) S.engins.splice(k,1); continue; }
+    const s=siegeDe(e); if(!s){ e.mort=1.5; continue; }
+    const ch=S.chateaux[s.ch], D=ENGINS[e.type];
+    e.tir=Math.max(0,e.tir-dt*1.1);
+    if(e.type==='belier'){
+      /* il roule jusqu'au portail, puis cogne */
+      const gx=ch.portail.x*TS+16, gy=(ch.portail.y+1)*TS+10, d=Math.hypot(gx-e.x,gy-e.y);
+      e.fx=(gx-e.x)/(d||1); e.fy=(gy-e.y)/(d||1);
+      if(d>14){ e.x+=e.fx*24*dt; e.y+=e.fy*24*dt; e.roule=(e.roule||0)+dt; continue; }
+      e.cd-=dt;
+      if(e.cd<=0){
+        e.cd=D.cd[0]+Math.random()*(D.cd[1]-D.cd[0]); e.tir=1;
+        const gi=ch.portail.y*W+ch.portail.x;
+        S.souffles.push({x:gx,y:gy-24,r:8,max:50,v:1}); gerbe(gx,gy-20,'#6b4a2a',8); sfx('frappe');
+        emettre('impact',{x:gx,y:gy-26,type:'belier',src:'att'});
+        if(objets[gi]===PORTAIL){
+          s.porte++;
+          if(s.porte>=7){ setObj(gi,0); s.breches++; chronique('Le bélier de '+CLANS[s.att].court+' enfonce le portail de '+ch.nom+'.'); }
+        }
+      }
+      continue;
+    }
+    e.cd-=dt;
+    if(e.cd<=0){
+      e.cd=D.cd[0]+Math.random()*(D.cd[1]-D.cd[0]);
+      const c=viserMur(ch,e); if(!c) continue;
+      const tx=c.x*TS+16+(Math.random()-0.5)*22, ty=c.y*TS+16+(Math.random()-0.5)*22;
+      const d=Math.hypot(tx-e.x,ty-e.y)||1; e.fx=(tx-e.x)/d; e.fy=(ty-e.y)/d;
+      e.tir=1;
+      tirer2(e.x+e.fx*20,e.y+e.fy*20,tx,ty,D.proj,D.vol*(0.85+Math.random()*0.3),D.haut,'att',s,c.i);
+      sfx(e.type==='canon'?'frappe':'arc');
+    }
+  }
+  /* défense et fin des sièges */
+  for(let k=S.sieges.length-1;k>=0;k--){
+    const s=S.sieges[k], ch=S.chateaux[s.ch];
+    s.t+=dt;
+    const vivants=S.engins.filter(function(e){ return e.siege===s.id&&!(e.mort>0); });
+    if(!vivants.length){ finirSiege(s,'engins'); continue; }
+    if(s.t>s.duree||!enGuerre(s.att,s.def)){ finirSiege(s,'temps'); continue; }
+    s.cdDef-=dt;
+    if(s.cdDef<=0){
+      s.cdDef=3+Math.random()*2.5;
+      /* un canon du château (ou une tour) tire sur un engin */
+      let src=null;
+      for(let oy=-ch.R;oy<=ch.R&&!src;oy++) for(let ox=-ch.R;ox<=ch.R;ox++){
+        const i=(ch.y+oy)*W+ch.x+ox;
+        if(objets[i]===CANON&&Math.random()<0.5){ src={x:(ch.x+ox)*TS+16,y:(ch.y+oy)*TS+16}; break; }
+      }
+      if(!src){ const L=anneauChateau(ch).filter(function(c){ return objets[c.i]===TOUR; }); if(L.length){ const c=L[Math.floor(Math.random()*L.length)]; src={x:c.x*TS+16,y:c.y*TS+16}; } }
+      if(src){
+        const cib=vivants[Math.floor(Math.random()*vivants.length)];
+        const tx=cib.x+(Math.random()-0.5)*70, ty=cib.y+(Math.random()-0.5)*70;
+        tirer2(src.x,src.y,tx,ty,'boulet',1.05,2.4,'def',s);
+        emettre('tirDefense',{x:src.x,y:src.y,tx:tx,ty:ty});
+      }
+    }
+  }
+  /* les maçons relèvent les murs des châteaux qui ne sont plus assiégés */
+  cdReparer-=dt;
+  if(cdReparer<=0){
+    cdReparer=9;
+    for(let c=0;c<S.chateaux.length;c++){
+      const ch=S.chateaux[c];
+      if(S.sieges.some(function(s){ return s.ch===c; })) continue;
+      const L=anneauChateau(ch);
+      for(let k=0;k<L.length;k++){
+        const t=L[k];
+        if(murDeChateau(objets[t.i])) continue;
+        if(objets[t.i]!==0&&objets[t.i]!==RUINE) continue;
+        setObj(t.i,t.doit,ch.clan);
+        if(S.degMurs) delete S.degMurs[t.i];
+        break;
+      }
+    }
+  }
+}
+
 /* ====================== camps & convois ====================== */
 function majCamps(dt){
   for(let k=0;k<S.camps.length;k++){
@@ -8216,6 +8447,7 @@ function majeur(dt){
   majCamps(dt);
   majConvois(dt);
   majRaids(dt);
+  majSieges(dt);
 
   /* --- apparitions --- */
   S.prochainMob-=dt;
@@ -9485,13 +9717,14 @@ function emettre(n,d){ try{ if(window.__vue3d&&window.__vue3d.actif&&window.__vu
 /* pont vers la vue 3D (script séparé, plus bas) */
 window.__jeu={get S(){return S;},get tuiles(){return tuiles;},get objets(){return objets;},
   get couleurTuile(){return couleurTuile;},get varObj(){return varObj;},
-  TS:TS,W:W,H:H,HOSTILES:HOSTILES,cielNoirceur:cielNoirceur,dansGrotte:dansGrotte,
+  TS:TS,W:W,H:H,HOSTILES:HOSTILES,CLANS:CLANS,cielNoirceur:cielNoirceur,dansGrotte:dansGrotte,
   OBJ:{ARBRE:ARBRE,ROCHER:ROCHER,BUISSON:BUISSON,BUISSON_VIDE:BUISSON_VIDE,SILEX:SILEX,FEU:FEU,MUR:MUR,HAUTES:HAUTES,
     COFFRE:COFFRE,FEU_MORT:FEU_MORT,RUINE:RUINE,MENHIR:MENHIR,ROSEAU:ROSEAU,FILON:FILON,CHAMPI:CHAMPI,PONT:PONT,
     MAISON:MAISON,OCCUPE:OCCUPE,PUITS:PUITS,ETAL:ETAL,PALIS:PALIS,PORTE:PORTE,TENTE:TENTE,PANNEAU:PANNEAU,
     MURAILLE:MURAILLE,TOUR:TOUR,DONJON:DONJON,PORTAIL:PORTAIL,BANNIERE:BANNIERE,FORGE:FORGE,
     QUINTAINE:QUINTAINE,RATELIER:RATELIER,CAISSES:CAISSES,FOIN:FOIN,CHARIOT:CHARIOT,
-    FOYER:FOYER,PILIER:PILIER,OSSUAIRE:OSSUAIRE,MAT:MAT},
+    FOYER:FOYER,PILIER:PILIER,OSSUAIRE:OSSUAIRE,MAT:MAT,
+    CASERNE:CASERNE,ECURIE:ECURIE,ATELIER:ATELIER,CHAPELLE:CHAPELLE,CANON:CANON},
   BIOME:{EAU:EAU,GUE:GUE,ROCHE:ROCHE,PINEDE:PINEDE,NEIGE:NEIGE,GROTTE:GROTTE,MARAIS:MARAIS,PONTON:PONTON,CHEMIN:CHEMIN,PAVE:PAVE}};
 raf=requestAnimationFrame(boucle);
 
@@ -10369,6 +10602,75 @@ Object.assign(MOD,{
       P('cyl12','#6a6660',[0,0.03,0],[0.42,0.03,0.42])])
 });
 delete COUCHE.chariot;
+/* --- bâtiments de garnison dans la cour des châteaux --- */
+function canonPieces(x,z,ry,echelle){
+  const e=echelle||1, s=Math.sin(ry), c=Math.cos(ry), o=function(dx,dz){ return [x+dx*c+dz*s, z-dx*s+dz*c]; };
+  const a=o(0,0), r1=o(0.2*e,-0.05*e), r2=o(-0.2*e,-0.05*e), b=o(0,0.32*e), m=o(0,0.66*e);
+  return [
+    P('box','#5a3c24',[a[0],0.2*e,a[1]],[0.34*e,0.18*e,0.62*e],'bois',[0,ry,0]),
+    P('tore','#3a2a1e',[r1[0],0.18*e,r1[1]],[0.34*e,0.34*e,0.34*e],'bois',[0,ry+H2O,0]),
+    P('tore','#3a2a1e',[r2[0],0.18*e,r2[1]],[0.34*e,0.34*e,0.34*e],'bois',[0,ry+H2O,0]),
+    P('cyl12','#2e3236',[b[0],0.4*e,b[1]],[0.16*e,0.82*e,0.16*e],null,[H2O-0.14,ry,0]),
+    P('cyl12','#3a3e42',[m[0],0.45*e,m[1]],[0.2*e,0.08*e,0.2*e],null,[H2O-0.14,ry,0]),
+    P('sph8','#2e3236',[a[0],0.42*e,a[1]],[0.18*e,0.18*e,0.18*e])
+  ];
+}
+Object.assign(MOD,{
+  /* caserne : longue salle de bois sur soubassement, toit de bardeaux, porte et râtelier */
+  caserne:[
+    P('box','#8a8478',[0,0.12,0],[1.02,0.24,1.02],'pierreBase'),
+    P('box','#7a5a38',[0,0.72,0],[0.96,0.96,0.96],'bois'),
+    P('box',BOIS_SOMBRE,[0.47,0.72,0.47],[0.08,1.0,0.08],'bois'), P('box',BOIS_SOMBRE,[-0.47,0.72,0.47],[0.08,1.0,0.08],'bois'),
+    P('box',BOIS_SOMBRE,[0.47,0.72,-0.47],[0.08,1.0,0.08],'bois'), P('box',BOIS_SOMBRE,[-0.47,0.72,-0.47],[0.08,1.0,0.08],'bois'),
+    P('prisme','#5a4636',[0,1.5,0],[1.14,0.62,1.2],'bois'),
+    P('box','#5a3c24',[0,0.5,0.49],[0.3,0.62,0.03],'porte'),
+    P('box','#7f93a2',[0.3,0.85,0.49],[0.18,0.14,0.02],'fenetre',null,'#ffb050'),
+    P('box','#7f93a2',[-0.3,0.85,0.49],[0.18,0.14,0.02],'fenetre',null,'#ffb050'),
+    P('box','#9a2e28',[0,1.05,0.5],[0.22,0.3,0.02],'tissu')],
+  /* écurie : ouverte, stalles, foin, abreuvoir, un cheval au repos */
+  ecurie:[
+    P('box','#7a7468',[0,0.03,0],[1.0,0.06,1.0],'pierreBase'),
+    P('box','#6a4a2a',[0,0.55,-0.45],[1.0,1.0,0.08],'bois'),
+    P('cyl6',BOIS_SOMBRE,[0.46,0.62,0.44],[0.07,1.24,0.07],'bois'), P('cyl6',BOIS_SOMBRE,[-0.46,0.62,0.44],[0.07,1.24,0.07],'bois'),
+    P('prisme','#6a5038',[0,1.38,0],[1.12,0.42,1.14],'bois',[0,0,0]),
+    P('box','#6a4a2a',[0,0.35,0.05],[0.06,0.6,0.8],'bois'),
+    P('box','#d9b85a',[-0.3,0.12,-0.25],[0.32,0.22,0.28],'tissu'),
+    P('box','#6a4a2a',[0.25,0.18,0.35],[0.36,0.14,0.14],'bois'), P('box','#2a4a54',[0.25,0.24,0.35],[0.3,0.02,0.1]),
+    /* le cheval : corps, cou, tête, pattes */
+    P('sph8','#6a4428',[0.24,0.52,-0.05],[0.26,0.24,0.56]),
+    P('cyl12','#6a4428',[0.24,0.72,0.26],[0.12,0.34,0.12],null,[0.6,0,0]),
+    P('sph8','#6a4428',[0.24,0.86,0.38],[0.11,0.12,0.24]),
+    P('cyl6','#2a1e14',[0.24,0.86,0.22],[0.04,0.18,0.1],null,[0.6,0,0]),
+    P('cyl6','#5a3a22',[0.17,0.22,0.14],[0.06,0.44,0.06]), P('cyl6','#5a3a22',[0.31,0.22,0.14],[0.06,0.44,0.06]),
+    P('cyl6','#5a3a22',[0.17,0.22,-0.24],[0.06,0.44,0.06]), P('cyl6','#5a3a22',[0.31,0.22,-0.24],[0.06,0.44,0.06]),
+    P('cyl6','#2a1e14',[0.24,0.5,-0.36],[0.05,0.3,0.05],null,[0.5,0,0])],
+  /* atelier de siège : appentis et trébuchet en construction */
+  atelier:[
+    P('box','#7a7468',[0,0.03,0],[1.0,0.06,1.0],'pierreBase'),
+    P('cyl6',BOIS_SOMBRE,[0.45,0.7,-0.45],[0.07,1.4,0.07],'bois'), P('cyl6',BOIS_SOMBRE,[-0.45,0.7,-0.45],[0.07,1.4,0.07],'bois'),
+    P('box','#5a4636',[0,1.32,-0.2],[1.06,0.05,0.62],'bois',[0.32,0,0]),
+    P('box','#7a5433',[0,0.12,0.12],[0.7,0.1,0.5],'bois'),
+    P('box','#7a5433',[0.28,0.55,0.12],[0.07,0.9,0.07],'bois',[0,0,-0.18]), P('box','#7a5433',[-0.28,0.55,0.12],[0.07,0.9,0.07],'bois',[0,0,0.18]),
+    P('cyl6','#5a3c24',[0,0.95,0.12],[0.05,0.7,0.05],'bois',[0,0,H2O]),
+    P('box','#8a6038',[0,0.95,0.12],[0.06,0.06,1.1],'bois',[0.5,0,0]),
+    P('box','#3a3634',[0,0.75,-0.25],[0.2,0.18,0.18]),
+    P('cyl6','#8a6038',[0.35,0.04,0.35],[0.06,0.5,0.06],'ecorce',[H2O,0.3,0]), P('cyl6','#8a6038',[0.3,0.08,0.38],[0.06,0.5,0.06],'ecorce',[H2O,0.6,0])],
+  /* chapelle : nef de pierre, toit pentu, clocheton et vitrail */
+  chapelle:[
+    P('box','#8a857a',[0,0.12,0],[0.9,0.24,1.0],'pierreBase'),
+    P('box','#b0aa9c',[0,0.8,0],[0.8,1.12,0.92],'pierre'),
+    P('prisme','#5a5e62',[0,1.62,0],[0.92,0.55,1.0],'tuiles',[0,H2O,0]),
+    P('box','#b0aa9c',[0,1.85,0.36],[0.26,0.5,0.22],'pierre'),
+    P('cone12','#5a5e62',[0,2.3,0.36],[0.3,0.45,0.3],'tuiles'),
+    P('box','#e0b94f',[0,2.62,0.36],[0.02,0.16,0.02]), P('box','#e0b94f',[0,2.66,0.36],[0.1,0.02,0.02]),
+    P('box','#6b4a2a',[0,0.5,0.47],[0.26,0.56,0.03],'porte'),
+    P('cyl12','#c86a3a',[0,1.18,0.465],[0.2,0.02,0.2],null,[H2O,0,0],'#a04010')],
+  /* canon de rempart sur sa plateforme */
+  canonFixe:[P('cyl12','#8a857a',[0,0.08,0],[0.9,0.16,0.9],'pierreBase')].concat(canonPieces(0,0,0,1.0),[
+    P('sph8','#1e1e1e',[0.32,0.24,-0.25],[0.12,0.12,0.12]), P('sph8','#1e1e1e',[0.4,0.24,-0.15],[0.12,0.12,0.12]), P('sph8','#1e1e1e',[0.36,0.34,-0.2],[0.12,0.12,0.12])])
+});
+TYPE_MOD[O.CASERNE]='caserne'; TYPE_MOD[O.ECURIE]='ecurie'; TYPE_MOD[O.ATELIER]='atelier';
+TYPE_MOD[O.CHAPELLE]='chapelle'; TYPE_MOD[O.CANON]='canonFixe';
 const ARBRES={chene:1,automne:1,bouleau:1,pin:1,sapinNeige:1,saule:1,arbreMort:1,palmier:1};
 const ORGA=Object.assign({rocher:1,filon:1,silex:1,buisson:1,buissonVide:1,hautes:1,roseau:1,champi:1,ossuaire:1,caisses:1,herbe:1},ARBRES);
 const PETIT={hautes:1,roseau:1,champi:1,silex:1,ornH:1,ornV:1,touffe:1,pave:1,herbe:1};
@@ -10972,6 +11274,7 @@ function creerFig(kind){
   if(kind==='kraken') return creerKraken();
   if(kind==='nav_galion') return creerNavire('galion');
   if(kind==='nav_pirate') return creerNavire('pirate');
+  if(kind.indexOf('eng_')===0) return creerEngin(kind.slice(4));
   return creerQuadrupede(kind);
 }
 function prendre(kind){
@@ -11351,6 +11654,211 @@ function majKrakens(S,T,dt){
   }
   for(let k=nBrasG;k<brasGeants.length;k++) brasGeants[k].visible=false;
   for(let k=nTrace;k<tracesBras.length;k++) tracesBras[k].visible=false;
+}
+/* ===================== SIÈGES : engins, projectiles, camp ===================== */
+const matPoutre=new T3.MeshStandardMaterial({color:0x6b4a2a,map:TEX_OBJ.bois,roughness:0.85});
+const matPoutreS=new T3.MeshStandardMaterial({color:0x4a3220,map:TEX_OBJ.bois,roughness:0.85});
+const matFer=new T3.MeshStandardMaterial({color:0x2e3236,roughness:0.45,metalness:0.7});
+const matBronze=new T3.MeshStandardMaterial({color:0x6a5a3a,roughness:0.35,metalness:0.8});
+const matPeauRam=new T3.MeshStandardMaterial({color:0x7a5a3a,map:TEX_P.cuir,roughness:0.9});
+const matCorde2=new T3.MeshStandardMaterial({color:0xc8b88a,roughness:0.9});
+const matPierreProj=new T3.MeshStandardMaterial({color:0x7a7670,map:TEX_OBJ.roche,roughness:0.95,flatShading:true});
+const matFlash=new T3.MeshBasicMaterial({color:0xffc060,transparent:true,opacity:0.9,blending:T3.AdditiveBlending,depthWrite:false});
+function poutre(g,m,a,b,ep){
+  /* une poutre tendue entre deux points */
+  const A=new T3.Vector3(a[0],a[1],a[2]), Bv=new T3.Vector3(b[0],b[1],b[2]), l=A.distanceTo(Bv);
+  const o=new T3.Mesh(GEO.box,m); o.scale.set(ep,l,ep); o.position.copy(A).add(Bv).multiplyScalar(0.5);
+  o.quaternion.setFromUnitVectors(new T3.Vector3(0,1,0),Bv.clone().sub(A).normalize()); o.castShadow=true; g.add(o); return o;
+}
+function roue(g,x,y,z,r){
+  const p=new T3.Group(); p.position.set(x,y,z); g.add(p);
+  const t=new T3.Mesh(GEO.tore,matPoutreS); t.rotation.y=Math.PI/2; t.scale.setScalar(r*2); t.castShadow=true; p.add(t);
+  for(let k=0;k<4;k++){ const s=new T3.Mesh(GEO.box,matPoutreS); s.scale.set(0.03,r*1.9,0.03); s.rotation.x=k*Math.PI/4; p.add(s); }
+  me(G2.cyl,matFer,0,0,0,r*0.4,0.08,r*0.4,p).rotation.z=Math.PI/2;
+  return p;
+}
+function drapeauClan(g,x,y,z){
+  me(G2.cyl,matPoutreS,x,y/2,z,0.04,y,0.04,g);
+  const f=new T3.Mesh(new T3.PlaneGeometry(0.4,0.28),new T3.MeshStandardMaterial({color:0xbd4a3d,side:T3.DoubleSide,roughness:0.9,map:TEX_OBJ.tissu}));
+  f.position.set(x+0.2,y-0.1,z); f.rotation.y=Math.PI/2; g.add(f); return f;
+}
+function creerEngin(type){
+  const g=new T3.Group(); g.rotation.order='YXZ';
+  const u={kind:'eng_'+type,type:type};
+  if(type==='trebuchet'){
+    /* châssis */
+    poutre(g,matPoutre,[0.48,0.08,-0.95],[0.48,0.08,0.95],0.12); poutre(g,matPoutre,[-0.48,0.08,-0.95],[-0.48,0.08,0.95],0.12);
+    poutre(g,matPoutre,[-0.55,0.1,0.85],[0.55,0.1,0.85],0.1); poutre(g,matPoutre,[-0.55,0.1,-0.85],[0.55,0.1,-0.85],0.1);
+    poutre(g,matPoutre,[-0.55,0.1,0],[0.55,0.1,0],0.1);
+    /* montants en A et contrefiches */
+    [-1,1].forEach(function(c){
+      poutre(g,matPoutre,[c*0.45,0.1,-0.7],[c*0.4,2.0,0],0.1); poutre(g,matPoutre,[c*0.45,0.1,0.7],[c*0.4,2.0,0],0.1);
+      poutre(g,matPoutreS,[c*0.46,0.9,-0.38],[c*0.46,0.9,0.38],0.06);
+    });
+    me(G2.cyl,matFer,0,2.0,0,0.08,1.0,0.08,g).rotation.z=Math.PI/2;
+    /* le bras, son contrepoids et sa fronde */
+    const bras=piv(0,2.0,0,g); u.bras=bras;
+    const b=new T3.Mesh(GEO.box,matPoutre); b.scale.set(0.1,0.1,3.0); b.position.z=0.75; b.castShadow=true; bras.add(b);
+    const cw=piv(0,0,-0.72,bras); u.cw=cw;
+    poutre(cw,matFer,[0.15,0,0],[0.15,-0.32,0],0.03); poutre(cw,matFer,[-0.15,0,0],[-0.15,-0.32,0],0.03);
+    const caisse=new T3.Mesh(GEO.box,matPoutreS); caisse.scale.set(0.5,0.42,0.42); caisse.position.y=-0.52; caisse.castShadow=true; cw.add(caisse);
+    me(GEO.box,matFer,0,-0.32,0,0.52,0.04,0.44,cw);
+    const fr=piv(0,0,2.25,bras); u.fronde=fr;
+    poutre(fr,matCorde2,[0,0,0],[0,-0.5,0],0.015);
+    u.pierre=me(GEO.roc,matPierreProj,0,-0.56,0,0.26,0.24,0.26,fr);
+    u.drapeau=drapeauClan(g,0.6,1.3,-0.9);
+  } else if(type==='canon'){
+    /* affût à deux roues, fût de bronze cerclé de fer */
+    const aff=piv(0,0,0,g); u.affut=aff;
+    poutre(aff,matPoutre,[0.16,0.28,-0.5],[0.16,0.32,0.35],0.08); poutre(aff,matPoutre,[-0.16,0.28,-0.5],[-0.16,0.32,0.35],0.08);
+    poutre(aff,matPoutre,[0,0.22,-0.75],[0,0.3,-0.2],0.1);
+    me(GEO.box,matPoutreS,0,0.3,0.05,0.4,0.08,0.3,aff);
+    u.roues=[roue(aff,0.28,0.26,0.1,0.26),roue(aff,-0.28,0.26,0.1,0.26)];
+    me(G2.cyl,matFer,0,0.26,0.1,0.06,0.62,0.06,aff).rotation.z=Math.PI/2;
+    const fut=piv(0,0.42,0.05,aff); fut.rotation.x=-0.16; u.fut=fut;
+    const t=me(G2.conique,matBronze,0,0,0.3,0.16,0.95,0.16,fut); t.rotation.x=Math.PI/2;
+    [0.0,0.38,0.72].forEach(function(z){ const r=me(G2.cyl,matFer,0,0,z,0.19,0.05,0.19,fut); r.rotation.x=Math.PI/2; });
+    me(G2.sph,matBronze,0,0,-0.18,0.17,0.17,0.17,fut);
+    u.flash=me(G2.sph,matFlash,0,0,0.95,0.32,0.32,0.5,fut); u.flash.castShadow=false; u.flash.visible=false;
+    /* pyramide de boulets et seau */
+    [[0.45,0.08,-0.35],[0.57,0.08,-0.35],[0.51,0.08,-0.24],[0.51,0.18,-0.31]].forEach(function(p){ me(G2.sph,matFer,p[0],p[1],p[2],0.12,0.12,0.12,g); });
+    me(G2.cyl,matPoutreS,-0.48,0.12,-0.3,0.16,0.24,0.16,g);
+    u.drapeau=drapeauClan(g,-0.45,1.1,-0.6);
+  } else {
+    /* bélier : chariot couvert de peaux, poutre ferrée suspendue */
+    const ch=piv(0,0,0,g); u.chassis=ch;
+    me(GEO.box,matPoutre,0,0.32,0,0.9,0.12,1.7,ch);
+    u.roues=[roue(ch,0.5,0.24,0.55,0.24),roue(ch,-0.5,0.24,0.55,0.24),roue(ch,0.5,0.24,-0.55,0.24),roue(ch,-0.5,0.24,-0.55,0.24)];
+    [[0.4,0.75],[-0.4,0.75],[0.4,-0.75],[-0.4,-0.75],[0.4,0],[-0.4,0]].forEach(function(p){ poutre(ch,matPoutreS,[p[0],0.36,p[1]],[p[0],1.25,p[1]],0.07); });
+    const toit=new T3.Mesh(GEO.prisme,matPeauRam); toit.rotation.y=Math.PI/2; toit.scale.set(1.8,0.55,1.05); toit.position.y=1.5; toit.castShadow=true; ch.add(toit);
+    const log=piv(0,0.85,0,ch); u.poutre=log;
+    const l=me(G2.cyl,new T3.MeshStandardMaterial({color:0x6a4a2a,map:TEX_OBJ.ecorce,roughness:0.9}),0,0,0.1,0.24,2.0,0.24,log); l.rotation.x=Math.PI/2;
+    const tete=me(G2.cone,matFer,0,0,1.18,0.3,0.3,0.3,log); tete.rotation.x=Math.PI/2;
+    [-0.5,0.5].forEach(function(z){ poutre(ch,matCorde2,[0,1.25,z],[0,0.85,z],0.02); });
+    u.drapeau=drapeauClan(ch,0,2.1,-0.7);
+  }
+  g.userData=u; scene.add(g); return g;
+}
+function poserEngin(f,e,T,dt){
+  const u=f.userData, X=e.x/TS, Z=e.y/TS;
+  f.position.set(X,solEn(X,Z),Z);
+  f.rotation.set(0,Math.atan2(e.fx||0,e.fy||1),0);
+  f.scale.setScalar(1);
+  const cc=J.CLANS[e.clan]; if(cc&&u.drapeau){ u.drapeau.material.color.set(cc.couleur); u.drapeau.rotation.x=Math.sin(T*3+X)*0.2; }
+  const tirNeuf=e.tir>(e.__tirAv||0)+0.4; e.__tirAv=e.tir;
+  const p=1-e.tir;
+  if(u.type==='trebuchet'){
+    /* le contrepoids tombe, le bras fouette par-dessus, puis on le ramène au treuil */
+    const repos=Math.PI-0.5, lance=repos+2.46;
+    let a=repos;
+    if(e.tir>0){ a=p<0.28?repos+2.46*easeS(p/0.28):lance-2.46*easeS((p-0.28)/0.72); }
+    u.bras.rotation.x=a; u.cw.rotation.x=-a;
+    u.fronde.rotation.x=-a+(e.tir>0&&p<0.35?-1.2*Math.sin(p/0.35*Math.PI):0);
+    u.pierre.visible=!(e.tir>0&&p>0.25&&p<0.85);
+    if(tirNeuf){ for(let k=0;k<6;k++) etincelle(X+(Math.random()-.5)*0.8,0.15,Z+(Math.random()-.5)*0.8,(Math.random()-.5),0.4,(Math.random()-.5),'#a89880',0.14,0.8,1,false); }
+  } else if(u.type==='canon'){
+    /* recul de l'affût, éclair à la bouche et nuage de poudre */
+    u.affut.position.z=-0.32*e.tir*e.tir;
+    u.flash.visible=e.tir>0.82; u.flash.scale.set(0.32*e.tir,0.32*e.tir,0.55*e.tir);
+    u.roues.forEach(function(r){ r.rotation.x=e.tir*2; });
+    if(tirNeuf){
+      const a=f.rotation.y, mx=X+Math.sin(a)*1.0, mz=Z+Math.cos(a)*1.0, y=f.position.y+0.55;
+      for(let k=0;k<16;k++) etincelle(mx,y,mz,Math.sin(a)*(1+Math.random()*2)+(Math.random()-.5),0.3+Math.random()*0.6,Math.cos(a)*(1+Math.random()*2)+(Math.random()-.5),
+        Math.random()<.5?'#d8d4cc':'#a8a49c',0.18+Math.random()*0.16,1.6,-0.15,false);
+      gerbe(mx,y,mz,10,['#fff2a0','#ffb040'],3,0.06,0.3,4,true,0.3);
+      onde(mx,f.position.y,mz,'#ffd890',0.2,1.2,0.25,0.6);
+    }
+  } else {
+    /* le bélier balance sa poutre */
+    u.poutre.position.z=e.tir>0?0.45*Math.sin(Math.min(1,p/0.5)*Math.PI):0;
+    u.roues.forEach(function(r){ r.rotation.x=-(e.roule||0)*2.2; });
+  }
+  /* touché : flash ; détruit : il s'affaisse et fume */
+  if(e.mort>0){ const k=1-e.mort/2; f.rotation.z=k*0.6; f.position.y-=k*0.35;
+    if(Math.random()<0.5) etincelle(X+(Math.random()-.5),f.position.y+0.6,Z+(Math.random()-.5),0,0.8,0,Math.random()<.5?'#3a3634':'#ff8a2a',0.18,1.2,-0.5,Math.random()<.3); }
+}
+/* les équipages, à la couleur de leur maison */
+function equipageDe(e){
+  if(!e.__eq){ const n=e.type==='belier'?2:2; e.__eq=[]; for(let k=0;k<n;k++) e.__eq.push({x:e.x,y:e.y,fx:0,fy:1}); }
+  const a=Math.atan2(e.fx||0,e.fy||1), s=Math.sin(a), c=Math.cos(a);
+  const pos=e.type==='trebuchet'?[[-0.9,-0.6],[0.9,-0.3]]:e.type==='canon'?[[-0.55,-0.55],[0.55,-0.7]]:[[-0.75,-0.3],[0.75,0.2]];
+  e.__eq.forEach(function(m,k){ const lx=pos[k][0], lz=pos[k][1];
+    m.x=e.x+(lx*c+lz*s)*TS; m.y=e.y+(-lx*s+lz*c)*TS; m.fx=e.fx; m.fy=e.fy; });
+  return e.__eq;
+}
+/* le camp : tentes, feu, bannières, palissade */
+const camps3D={};
+function campDe(s){
+  if(camps3D[s.id]) return camps3D[s.id];
+  const g=new T3.Group(), c=s.camp, px=-c.dy, py=c.dx, cx=c.x+0.5, cz=c.y+0.5;
+  const poserM=function(nom,lat,av,rot){ const m=modeleMesh(nom,0); const x=cx+px*lat+c.dx*av, z=cz+py*lat+c.dy*av; m.position.set(x,solEn(x,z),z); if(rot!==undefined) m.rotation.y=rot; g.add(m); };
+  poserM('tente',-2.2,2.2,0.3); poserM('tente',2.2,2.4,-0.4); poserM('tente',0,3.4,0); poserM('feu',0,1.6);
+  poserM('caisses',-1.2,3.0); poserM('foin',1.4,3.2,0.6);
+  poserM('palis',-5,0.5); poserM('palis',5,0.5);
+  const cc=J.CLANS[s.att];
+  [[-3.2,1],[3.2,1]].forEach(function(o){ const x=cx+px*o[0]+c.dx*o[1], z=cz+py*o[0]+c.dy*o[1], b=new T3.Group(); b.position.set(x,solEn(x,z),z); g.add(b);
+    const f=drapeauClan(b,0,2.2,0); f.scale.set(1.4,2.2,1); if(cc) f.material.color.set(cc.couleur); });
+  g.traverse(function(o){ if(o.isMesh) o.castShadow=true; });
+  scene.add(g); camps3D[s.id]=g; return g;
+}
+/* projectiles */
+const projs=[]; let nProj=0;
+function projectile(type){
+  if(nProj>=projs.length){ const g=new T3.Group(); g.userData.p=me(GEO.roc,matPierreProj,0,0,0,1,1,1,g); g.userData.b=me(G2.sph,matFer,0,0,0,1,1,1,g); scene.add(g); projs.push(g); }
+  const g=projs[nProj++]; g.visible=true; g.userData.p.visible=type==='pierre'; g.userData.b.visible=type!=='pierre';
+  return g;
+}
+function majSiegesVue(S,T,dt){
+  /* camps */
+  const actifs={};
+  (S.sieges||[]).forEach(function(s){ actifs[s.id]=1; const g=campDe(s); g.visible=Math.abs(s.camp.x-S.j.x/TS)<40&&Math.abs(s.camp.y-S.j.y/TS)<40; });
+  for(const id in camps3D) if(!actifs[id]){ scene.remove(camps3D[id]); delete camps3D[id]; }
+  /* engins et équipages */
+  (S.engins||[]).forEach(function(e){
+    if(Math.abs(e.x/TS-S.j.x/TS)>34||Math.abs(e.y/TS-S.j.y/TS)>34) return;
+    poserEngin(prendre('eng_'+e.type),e,T,dt);
+    if(!(e.mort>0)){
+      const cc=J.CLANS[e.clan], look={corps:cc?cc.couleur:'#5a6470',jambes:'#3a3026',peau:'#d8b08a',chef:'#8d9499',coiffe:'casque',tissu:'maille'};
+      equipageDe(e).forEach(function(m){ poser(prendre('humain'),m,'bipede',look,1,{arme:e.type==='belier'?null:'lance',attaque:-1,flash:0},dt); });
+    }
+  });
+  /* projectiles en vol : un arc, et une traînée de poussière ou de poudre */
+  nProj=0;
+  (S.boulets||[]).forEach(function(b){
+    const g=projectile(b.type), X=b.x/TS, Z=b.y/TS, y=solEn(X,Z)+0.6+Math.sin(Math.PI*b.f)*b.haut;
+    g.position.set(X,y,Z); g.rotation.set(b.f*9,b.f*7,0);
+    const s=b.type==='pierre'?0.42:0.16; g.userData.p.scale.setScalar(s); g.userData.b.scale.setScalar(s);
+    if(Math.random()<0.8) etincelle(X,y,Z,0,0.1,0,b.type==='pierre'?'#a89880':'#8a8a86',b.type==='pierre'?0.14:0.09,0.7,-0.2,false);
+  });
+  for(let k=nProj;k<projs.length;k++) projs[k].visible=false;
+}
+function evSiege(n,d){
+  const S=J.S; if(!S) return;
+  const X=d.x/TS, Z=d.y/TS, y=solEn(X,Z);
+  if(Math.abs(X-S.j.x/TS)>40||Math.abs(Z-S.j.y/TS)>40) return;
+  if(n==='impact'){
+    /* nuage de poussière, éclats de pierre ; un boulet éclate en plus */
+    for(let k=0;k<22;k++){ const a=Math.random()*6.2832, v=0.8+Math.random()*2.2;
+      etincelle(X+Math.cos(a)*0.3,y+0.3+Math.random()*0.8,Z+Math.sin(a)*0.3,Math.cos(a)*v,0.6+Math.random()*1.2,Math.sin(a)*v,
+        Math.random()<.5?'#b8ae98':'#8a8478',0.22+Math.random()*0.2,1.4+Math.random(),0.4,false); }
+    for(let k=0;k<(d.type==='belier'?5:8);k++){ const a=Math.random()*6.2832;
+      debri(d.type==='belier'?'box':'roc',d.type==='belier'?'#6b4a2a':'#8d9499',X,y+1,Z,Math.cos(a)*3,3+Math.random()*3,Math.sin(a)*3,0.1+Math.random()*0.12,1.6); }
+    onde(X,y,Z,'#e8dcc0',0.3,d.type==='pierre'?3.2:2.2,0.5,0.7);
+    if(d.type==='boulet'){
+      gerbe(X,y+0.8,Z,20,['#fff2a0','#ffb040','#ff6a1a'],4,0.08,0.4,4,true,0.6);
+      const l=new T3.PointLight(0xffa040,5,8,1.6); l.position.set(X,y+1.2,Z);
+      transitoire(l,0.35,function(T,e){ l.intensity=5*(1-e); });
+    }
+  } else if(n==='engin'){
+    for(let k=0;k<16;k++){ const a=Math.random()*6.2832;
+      debri('box',k%2?'#6b4a2a':'#4a3220',X,y+0.8,Z,Math.cos(a)*3.5,3+Math.random()*3,Math.sin(a)*3.5,0.08+Math.random()*0.14,2.2); }
+    gerbe(X,y+0.6,Z,24,['#ffb040','#ff6a1a','#fff2a0'],3.5,0.08,0.7,2,true,0.8);
+    onde(X,y,Z,'#ffb070',0.4,3.0,0.6,0.8);
+  } else if(n==='tirDefense'){
+    for(let k=0;k<10;k++) etincelle(X+(Math.random()-.5)*0.4,y+1.4+Math.random()*0.4,Z+(Math.random()-.5)*0.4,(Math.random()-.5)*1.5,0.5+Math.random()*0.5,(Math.random()-.5)*1.5,
+      Math.random()<.5?'#d8d4cc':'#a8a49c',0.2+Math.random()*0.12,1.4,-0.15,false);
+    gerbe(X,y+1.5,Z,8,['#fff2a0','#ffb040'],2.5,0.06,0.25,2,true,0.3);
+  }
 }
 let S3t=function(){ return J.S?J.S.t:0; };
 const LOOK={
@@ -12673,6 +13181,7 @@ function rendre(dt){
     poser(prendre('objet'),c,'objet',{corps:'#7a5433',peau:'#c8b48a',chef:'#3e2c1c'},1.1,{flash:c.flash},DT); });
   (S.navires||[]).forEach(function(c){ if(c.x===undefined||!dansRayon(c)) return;
     poserNavire(prendre(c.type==='pirate'?'nav_pirate':'nav_galion'),c,S.t/1000); });
+  majSiegesVue(S,S.t/1000,DT);
   finFigs();
   majKrakens(S,S.t/1000,DT);
 
@@ -12791,7 +13300,8 @@ window.addEventListener('keydown',function(e){
 });
 const ast=document.getElementById('astuce');
 if(ast) ast.insertAdjacentHTML('beforeend','<br><kbd>V</kbd> vue 2D/3D · <kbd>molette</kbd> zoom<br><kbd>clic droit</kbd> glisser : tourner la vue');
-vue.meteo=meteo; vue.evenement=evenement;
+vue.meteo=meteo;
+vue.evenement=function(n,d){ if(n==='impact'||n==='engin'||n==='tirDefense') evSiege(n,d); else evenement(n,d); };
 /* outils de mesure (tests) */
 vue.debug={rend:rend,scene:scene,soleil:soleil,qualite:function(q){ appliquerQualite(q); },composer:function(on){ if(!on) composer=null; else creerComposer(); },decor:function(){ const t0=performance.now(); construireDecor(); return performance.now()-t0; }};
 /* réglages de caméra accessibles (tests, captures) */
