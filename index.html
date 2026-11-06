@@ -6797,6 +6797,18 @@ function viserMur(ch,e){
 }
 function impactBoulet(b){
   const s=b.siege?S.sieges.find(function(q){ return q.id===b.siege; }):null;
+  if(b.type==='fleche'){
+    /* une flèche : elle se fiche dans le bois d'un engin, ou dans qui passe là */
+    for(let n=0;n<S.engins.length;n++){
+      const e=S.engins[n];
+      if(e.mort>0||Math.hypot(e.x-b.tx,e.y-b.ty)>34) continue;
+      e.pv-=2; e.flash=0.12;
+      if(e.pv<=0){ e.mort=2; emettre('engin',{x:e.x,y:e.y,type:e.type}); }
+      break;
+    }
+    if(Math.hypot(S.j.x-b.tx,S.j.y-b.ty)<18) blesser(6,null,b.tx,b.ty);
+    return;
+  }
   S.souffles.push({x:b.tx,y:b.ty,r:10,max:b.type==='pierre'?96:72,v:1});
   gerbe(b.tx,b.ty,'#8a8478',b.type==='pierre'?22:14);
   emettre('impact',{x:b.tx,y:b.ty,type:b.type,src:b.src});
@@ -6898,23 +6910,43 @@ function majSieges(dt){
     const vivants=S.engins.filter(function(e){ return e.siege===s.id&&!(e.mort>0); });
     if(!vivants.length){ finirSiege(s,'engins'); continue; }
     if(s.t>s.duree||!enGuerre(s.att,s.def)){ finirSiege(s,'temps'); continue; }
-    s.cdDef-=dt;
-    if(s.cdDef<=0){
-      s.cdDef=3+Math.random()*2.5;
-      /* un canon du château (ou une tour) tire sur un engin */
-      let src=null;
-      for(let oy=-ch.R;oy<=ch.R&&!src;oy++) for(let ox=-ch.R;ox<=ch.R;ox++){
+    /* La garnison se défend. Chaque canon de rempart tire à son rythme ; les tours
+       lancent des pierres ; des archers postés sur le mur qui fait face au camp
+       décochent des volées sur les engins et leurs servants. */
+    if(!s.defense){
+      s.defense={canons:[],archers:[]};
+      for(let oy=-ch.R;oy<=ch.R;oy++) for(let ox=-ch.R;ox<=ch.R;ox++){
         const i=(ch.y+oy)*W+ch.x+ox;
-        if(objets[i]===CANON&&Math.random()<0.5){ src={x:(ch.x+ox)*TS+16,y:(ch.y+oy)*TS+16}; break; }
+        if(objets[i]===CANON) s.defense.canons.push({x:(ch.x+ox)*TS+16,y:(ch.y+oy)*TS+16,cd:1+Math.random()*2,h:0.6});
       }
-      if(!src){ const L=anneauChateau(ch).filter(function(c){ return objets[c.i]===TOUR; }); if(L.length){ const c=L[Math.floor(Math.random()*L.length)]; src={x:c.x*TS+16,y:c.y*TS+16}; } }
-      if(src){
-        const cib=vivants[Math.floor(Math.random()*vivants.length)];
-        const tx=cib.x+(Math.random()-0.5)*70, ty=cib.y+(Math.random()-0.5)*70;
-        tirer2(src.x,src.y,tx,ty,'boulet',1.05,2.4,'def',s);
-        emettre('tirDefense',{x:src.x,y:src.y,tx:tx,ty:ty});
+      anneauChateau(ch).forEach(function(c){
+        if(objets[c.i]===TOUR) s.defense.canons.push({x:c.x*TS+16,y:c.y*TS+16,cd:2+Math.random()*3,h:3.6,tour:true});
+      });
+      /* le mur face au camp : on y poste six archers */
+      const L=anneauChateau(ch).filter(function(c){ return (c.x-ch.x)*s.camp.dx+(c.y-ch.y)*s.camp.dy===ch.R&&objets[c.i]===MURAILLE; });
+      for(let k=0;k<Math.min(6,L.length);k++){
+        const c=L[Math.floor(k*L.length/Math.min(6,L.length))];
+        s.defense.archers.push({x:c.x*TS+16,y:c.y*TS+16,fx:s.camp.dx,fy:s.camp.dy,cd:0.5+Math.random()*2,tir:0,mur:c.i});
       }
     }
+    s.defense.canons.forEach(function(cn){
+      cn.cd-=dt; if(cn.cd>0) return;
+      cn.cd=cn.tour?4.5+Math.random()*2.5:2.6+Math.random()*1.6;
+      const cib=vivants[Math.floor(Math.random()*vivants.length)];
+      const ecart=cn.tour?60:44;
+      const tx=cib.x+(Math.random()-0.5)*ecart, ty=cib.y+(Math.random()-0.5)*ecart;
+      tirer2(cn.x,cn.y,tx,ty,cn.tour?'pierre':'boulet',cn.tour?1.4:1.0,cn.tour?3.5:2.2,'def',s);
+      emettre('tirDefense',{x:cn.x,y:cn.y,h:cn.h,tour:!!cn.tour});
+    });
+    s.defense.archers.forEach(function(a){
+      /* un archer dont le pan de mur est tombé n'a plus où se tenir */
+      if(!murDeChateau(objets[a.mur])){ a.mort=true; return; }
+      a.tir=Math.max(0,a.tir-dt*1.5);
+      a.cd-=dt; if(a.cd>0) return;
+      a.cd=1.6+Math.random()*1.4; a.tir=1;
+      const cib=vivants[Math.floor(Math.random()*vivants.length)];
+      tirer2(a.x,a.y,cib.x+(Math.random()-0.5)*40,cib.y+(Math.random()-0.5)*40,'fleche',0.75,1.4,'def',s);
+    });
   }
   /* les maçons relèvent les murs des châteaux qui ne sont plus assiégés */
   cdReparer-=dt;
@@ -11804,8 +11836,12 @@ function campDe(s){
 /* projectiles */
 const projs=[]; let nProj=0;
 function projectile(type){
-  if(nProj>=projs.length){ const g=new T3.Group(); g.userData.p=me(GEO.roc,matPierreProj,0,0,0,1,1,1,g); g.userData.b=me(G2.sph,matFer,0,0,0,1,1,1,g); scene.add(g); projs.push(g); }
-  const g=projs[nProj++]; g.visible=true; g.userData.p.visible=type==='pierre'; g.userData.b.visible=type!=='pierre';
+  if(nProj>=projs.length){ const g=new T3.Group(); g.userData.p=me(GEO.roc,matPierreProj,0,0,0,1,1,1,g); g.userData.b=me(G2.sph,matFer,0,0,0,1,1,1,g);
+    const f=new T3.Group(); g.add(f); g.userData.f=f;
+    const h=me(G2.cyl,matPoutre,0,0,0,0.025,0.6,0.025,f); h.rotation.x=Math.PI/2;
+    const pt=me(G2.cone,matFer,0,0,0.33,0.05,0.1,0.05,f); pt.rotation.x=Math.PI/2;
+    scene.add(g); projs.push(g); }
+  const g=projs[nProj++]; g.visible=true; g.userData.p.visible=type==='pierre'; g.userData.b.visible=type==='boulet'; g.userData.f.visible=type==='fleche';
   return g;
 }
 function majSiegesVue(S,T,dt){
@@ -11813,6 +11849,20 @@ function majSiegesVue(S,T,dt){
   const actifs={};
   (S.sieges||[]).forEach(function(s){ actifs[s.id]=1; const g=campDe(s); g.visible=Math.abs(s.camp.x-S.j.x/TS)<40&&Math.abs(s.camp.y-S.j.y/TS)<40; });
   for(const id in camps3D) if(!actifs[id]){ scene.remove(camps3D[id]); delete camps3D[id]; }
+  /* archers de la garnison, debout sur le chemin de ronde, arc bandé vers le camp */
+  (S.sieges||[]).forEach(function(s){
+    if(!s.defense) return;
+    const cc=J.CLANS[s.def], look={corps:cc?cc.couleur:'#5a6470',jambes:'#3a3026',peau:'#d8b08a',chef:cc?cc.vif:'#8d9499',coiffe:'capuche',tissu:'cuir'};
+    s.defense.archers.forEach(function(a){
+      if(a.mort||Math.abs(a.x/TS-S.j.x/TS)>34||Math.abs(a.y/TS-S.j.y/TS)>34) return;
+      const fig=prendre('humain');
+      poser(fig,a,'bipede',look,1,{arme:'arc',attaque:-1,flash:0,pose:function(u){
+        const lache=a.tir>0.75;
+        u.brasG.rotation.set(-1.55,0,0.1); u.brasD.rotation.set(lache?-1.2:-1.45,0,lache?-0.2:-0.6);
+        u.brasD.userData.coude.rotation.x=lache?-0.3:-1.4; }},dt);
+      fig.position.y=solEn(a.x/TS,a.y/TS)+2.12;
+    });
+  });
   /* engins et équipages */
   (S.engins||[]).forEach(function(e){
     if(Math.abs(e.x/TS-S.j.x/TS)>34||Math.abs(e.y/TS-S.j.y/TS)>34) return;
@@ -11826,7 +11876,14 @@ function majSiegesVue(S,T,dt){
   nProj=0;
   (S.boulets||[]).forEach(function(b){
     const g=projectile(b.type), X=b.x/TS, Z=b.y/TS, y=solEn(X,Z)+0.6+Math.sin(Math.PI*b.f)*b.haut;
-    g.position.set(X,y,Z); g.rotation.set(b.f*9,b.f*7,0);
+    g.position.set(X,y,Z);
+    if(b.type==='fleche'){
+      /* la flèche suit sa trajectoire : elle monte, bascule, et pique */
+      const dx=(b.tx-b.x0)/TS, dz=(b.ty-b.y0)/TS, L=Math.hypot(dx,dz)||1, pente=Math.PI*Math.cos(Math.PI*b.f)*b.haut/L;
+      g.rotation.order='YXZ'; g.rotation.set(-Math.atan(pente),Math.atan2(dx,dz),0); g.scale.setScalar(1);
+      return;
+    }
+    g.rotation.order='XYZ'; g.rotation.set(b.f*9,b.f*7,0);
     const s=b.type==='pierre'?0.42:0.16; g.userData.p.scale.setScalar(s); g.userData.b.scale.setScalar(s);
     if(Math.random()<0.8) etincelle(X,y,Z,0,0.1,0,b.type==='pierre'?'#a89880':'#8a8a86',b.type==='pierre'?0.14:0.09,0.7,-0.2,false);
   });
@@ -11855,7 +11912,11 @@ function evSiege(n,d){
     gerbe(X,y+0.6,Z,24,['#ffb040','#ff6a1a','#fff2a0'],3.5,0.08,0.7,2,true,0.8);
     onde(X,y,Z,'#ffb070',0.4,3.0,0.6,0.8);
   } else if(n==='tirDefense'){
-    for(let k=0;k<10;k++) etincelle(X+(Math.random()-.5)*0.4,y+1.4+Math.random()*0.4,Z+(Math.random()-.5)*0.4,(Math.random()-.5)*1.5,0.5+Math.random()*0.5,(Math.random()-.5)*1.5,
+    const hh=(d.h||1.4);
+    const l=new T3.PointLight(0xffa040,3.5,7,1.6); l.position.set(X,y+hh+0.3,Z);
+    transitoire(l,0.25,function(T,e){ l.intensity=3.5*(1-e); });
+    onde(X,y+hh-0.3,Z,'#ffd890',0.2,1.3,0.25,0.6);
+    for(let k=0;k<10;k++) etincelle(X+(Math.random()-.5)*0.4,y+hh+Math.random()*0.4,Z+(Math.random()-.5)*0.4,(Math.random()-.5)*1.5,0.5+Math.random()*0.5,(Math.random()-.5)*1.5,
       Math.random()<.5?'#d8d4cc':'#a8a49c',0.2+Math.random()*0.12,1.4,-0.15,false);
     gerbe(X,y+1.5,Z,8,['#fff2a0','#ffb040'],2.5,0.06,0.25,2,true,0.3);
   }
