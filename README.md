@@ -31,7 +31,13 @@ au premier chargement pour récupérer Three.js et les polices).
 
 ## Ce que fait la vue 3D
 
-- relief (falaises, eau en creux), textures peintes par biome, herbe et feuillages animés par le vent ;
+- sol photoréaliste : de vraies matières photographiées (herbe, sous-bois, boue, sable, neige, roche,
+  pavés, planches) mélangées pixel par pixel, avec des lisières irrégulières, du relief qui accroche
+  la lumière, des falaises plaquées de côté et de la neige sur les sommets ;
+- vrai ciel nuageux qui dérive lentement et éclaire toute la scène (lumière ambiante et reflets) ;
+- arbres aux feuillages arrondis et sapins à branches tombantes, rochers lissés, murs de château,
+  toits, bois et écorce en vraies textures ;
+- relief (falaises, eau en creux), herbe et feuillages animés par le vent ;
 - arbres propres à chaque biome (chênes, bouleaux, pins, sapins enneigés, saules, palmiers…) ;
 - maisons à colombages, toits de tuiles, fenêtres qui s'allument la nuit ;
 - personnages articulés et animés, habits texturés ;
@@ -48,3 +54,10 @@ au premier chargement pour récupérer Three.js et les polices).
 - récolte : les arbres tremblent puis tombent, les rochers éclatent, les baies sautent vers toi,
   les coffres crachent leurs pièces ; les constructions sortent de terre ; les objets fabriqués
   apparaissent au-dessus de la tête.
+
+## Crédits
+
+Textures et ciel : [Poly Haven](https://polyhaven.com), licence CC0 (domaine public) —
+aerial_grass_rock, forrest_ground_01, brown_mud_leaves_01, grass_path_2, aerial_beach_01, snow_02,
+rocky_terrain_02, cobblestone_floor_01, wood_planks, bark_brown_02, castle_brick_07, roof_tiles_14,
+kloofendal_48d_partly_cloudy_puresky. Rendu : [Three.js](https://threejs.org) (licence MIT).

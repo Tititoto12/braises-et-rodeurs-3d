@@ -9779,6 +9779,7 @@ try{
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/RGBELoader.js"></script>
 <script>
 /* ====================== VUE 3D ======================
    Le jeu tourne exactement comme avant ; on remplace seulement le dessin.
@@ -9952,6 +9953,152 @@ texSol.minFilter=T3.LinearMipmapLinearFilter;
 const matSol=new T3.MeshStandardMaterial({vertexColors:true,map:texSol,roughness:0.95,metalness:0});
 /* une montagne entre la caméra et le joueur s'ajoure comme le reste du décor */
 avecDecoupe(matSol,0);
+/* ---------- sol photoréaliste ----------
+   Vraies matières photographiées (Poly Haven, licence CC0) rangées dans deux piles de
+   textures : couleur et relief. Chaque pixel du sol mélange les matières des quatre cases
+   voisines, avec une lisière irrégulière, et les falaises sont plaquées de côté pour ne pas
+   étirer la roche. Sans WebGL 2 (ou en ouvrant le fichier en local), l'ancien sol reste. */
+const SOL_HD=!!(rend.capabilities.isWebGL2&&T3.DataTexture2DArray&&location.protocol!=='file:');
+const COUCHES=['aerial_grass_rock','forrest_ground_01','brown_mud_leaves_01','grass_path_2','aerial_beach_01','snow_02','rocky_terrain_02','cobblestone_floor_01','wood_planks'];
+/* répétitions par unité de monde : une photo aérienne couvre plus de terrain qu'un pavé */
+const ECH_COUCHE=[0.26,0.42,0.36,0.42,0.2,0.3,0.24,0.55,0.6];
+const COUCHE_DE={0:4,1:4,2:4,3:0,4:1,5:1,6:2,7:6,8:5,9:6,10:6,11:3,12:7,13:8};
+const COUCHE_NEIGE=5;
+const TEX_S=window.matchMedia('(pointer: coarse)').matches?512:1024;
+const splatData=new Uint8Array(W*H*4);
+const texSplat=new T3.DataTexture(splatData,W,H,T3.RGBAFormat);
+texSplat.magFilter=texSplat.minFilter=T3.NearestFilter;
+function pileTex(){
+  const n=COUCHES.length, d=new Uint8Array(TEX_S*TEX_S*4*n);
+  for(let k=0;k<d.length;k+=4){ d[k]=d[k+1]=d[k+2]=128; d[k+3]=255; }
+  const t=new T3.DataTexture2DArray(d,TEX_S,TEX_S,n);
+  t.format=T3.RGBAFormat; t.type=T3.UnsignedByteType;
+  t.wrapS=t.wrapT=T3.RepeatWrapping; t.magFilter=T3.LinearFilter; t.minFilter=T3.LinearMipmapLinearFilter;
+  t.generateMipmaps=true; t.anisotropy=Math.min(8,rend.capabilities.getMaxAnisotropy());
+  return t;
+}
+const uSol={uSolC:{value:null},uSolN:{value:null},uSplat:{value:texSplat},uTailleS:{value:new T3.Vector2(W,H)},
+  uEchSol:{value:ECH_COUCHE},uMoySol:{value:COUCHES.map(function(){ return new T3.Vector3(0.5,0.5,0.5); })},
+  uPret:{value:0},uRelief:{value:1.0},uTeinte:{value:0.3},uGainSol:{value:1.0}};
+if(SOL_HD){
+  uSol.uSolC.value=pileTex(); uSol.uSolN.value=pileTex();
+  const cvT=document.createElement('canvas'); cvT.width=cvT.height=TEX_S;
+  const gT=cvT.getContext('2d',{willReadFrequently:true});
+  let restant=COUCHES.length*2, rate=false;
+  const fini=function(){ if(--restant>0) return; if(rate) return;
+    uSol.uSolC.value.needsUpdate=true; uSol.uSolN.value.needsUpdate=true; uSol.uPret.value=1; };
+  COUCHES.forEach(function(id,k){
+    ['diff','nor'].forEach(function(suf){
+      const im=new Image();
+      im.onload=function(){
+        try{
+          gT.drawImage(im,0,0,TEX_S,TEX_S);
+          const px=gT.getImageData(0,0,TEX_S,TEX_S).data;
+          const pile=suf==='diff'?uSol.uSolC.value:uSol.uSolN.value;
+          pile.image.data.set(px,k*TEX_S*TEX_S*4);
+          if(suf==='diff'){ let r=0,g=0,b=0; for(let i=0;i<px.length;i+=4*97){ r+=px[i]; g+=px[i+1]; b+=px[i+2]; }
+            const n=px.length/(4*97); uSol.uMoySol.value[k].set(r/n/255,g/n/255,b/n/255); }
+        }catch(e){ rate=true; }
+        fini();
+      };
+      im.onerror=function(){ rate=true; fini(); };
+      im.src='assets/tex/'+id+'_'+suf+'.jpg';
+    });
+  });
+  const avantSol=matSol.onBeforeCompile;
+  matSol.onBeforeCompile=function(sh,r){
+    avantSol.call(this,sh,r);
+    Object.assign(sh.uniforms,uSol);
+    sh.vertexShader='varying vec3 vSolP;\nvarying vec3 vSolN;\n'+sh.vertexShader.replace('#include <project_vertex>',
+      '#include <project_vertex>\n vSolP=(modelMatrix*vec4(transformed,1.0)).xyz; vSolN=normalize(mat3(modelMatrix)*objectNormal);');
+    sh.fragmentShader=[
+      'precision highp sampler2DArray;',
+      'uniform sampler2DArray uSolC; uniform sampler2DArray uSolN; uniform sampler2D uSplat; uniform vec2 uTailleS;',
+      'uniform float uEchSol['+COUCHES.length+']; uniform vec3 uMoySol['+COUCHES.length+'];',
+      'uniform float uPret; uniform float uRelief; uniform float uTeinte; uniform float uGainSol;',
+      'varying vec3 vSolP; varying vec3 vSolN;',
+      'float hshS(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }',
+      'float bruitS(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);',
+      '  return mix(mix(hshS(i),hshS(i+vec2(1.0,0.0)),f.x),mix(hshS(i+vec2(0.0,1.0)),hshS(i+vec2(1.0,1.0)),f.x),f.y); }',
+      'vec4 solCase(vec2 c){ c=clamp(c,vec2(0.0),uTailleS-1.0); return texture(uSplat,(c+0.5)/uTailleS); }',
+      'vec3 repere(vec3 N,vec3 T,vec3 B,vec3 t){ T=normalize(T-N*dot(N,T)); B=normalize(B-N*dot(N,B)-T*dot(T,B)); return T*t.x+B*t.y+N*t.z; }',
+      'void coucheSol(float id,vec2 uvH,vec2 uvV,vec2 dHx,vec2 dHy,vec2 dVx,vec2 dVy,vec3 TV,float raide,vec3 N,out vec3 c,out vec3 n){',
+      '  float e=uEchSol[int(id)];',
+      '  vec3 cH=textureGrad(uSolC,vec3(uvH*e,id),dHx*e,dHy*e).rgb;',
+      '  vec3 tH=textureGrad(uSolN,vec3(uvH*e,id),dHx*e,dHy*e).xyz*2.0-1.0; tH.y=-tH.y; tH.xy*=uRelief;',
+      '  c=cH; n=repere(N,vec3(1.0,0.0,0.0),vec3(0.0,0.0,-1.0),tH);',
+      '  if(raide>0.002){',
+      '    vec3 cV=textureGrad(uSolC,vec3(uvV*e,id),dVx*e,dVy*e).rgb;',
+      '    vec3 tV=textureGrad(uSolN,vec3(uvV*e,id),dVx*e,dVy*e).xyz*2.0-1.0; tV.y=-tV.y; tV.xy*=uRelief;',
+      '    c=mix(c,cV,raide); n=mix(n,repere(N,TV,vec3(0.0,1.0,0.0),tV),raide);',
+      '  }',
+      '}'
+    ].join('\n')+'\n'+sh.fragmentShader
+    .replace('#include <map_fragment>',[
+      'vec3 solNW=normalize(vSolN);',
+      'if(uPret>0.5){',
+      '  vec3 P=vSolP, N=solNW; vec2 pt=P.xz;',
+      '  vec2 dist=vec2(bruitS(pt*1.3),bruitS(pt*1.3+vec2(17.0,5.0)))-0.5+(vec2(bruitS(pt*3.7+3.0),bruitS(pt*3.7+11.0))-0.5)*0.45;',
+      '  vec2 q=pt+dist*0.7-0.5; vec2 i0=floor(q); vec2 f=smoothstep(0.12,0.88,fract(q));',
+      '  vec4 s[4]; s[0]=solCase(i0); s[1]=solCase(i0+vec2(1.0,0.0)); s[2]=solCase(i0+vec2(0.0,1.0)); s[3]=solCase(i0+vec2(1.0,1.0));',
+      '  float ws[4]; ws[0]=(1.0-f.x)*(1.0-f.y); ws[1]=f.x*(1.0-f.y); ws[2]=(1.0-f.x)*f.y; ws[3]=f.x*f.y;',
+      '  float ids[4]; vec3 refC=vec3(0.0);',
+      '  for(int k=0;k<4;k++){ ids[k]=floor(s[k].a*255.0+0.5); refC+=s[k].rgb*ws[k]; }',
+      '  vec2 uvH=vec2(P.x,-P.z);',
+      '  float sx=N.x>=0.0?1.0:-1.0, sz=N.z>=0.0?1.0:-1.0; bool axeX=abs(N.x)>abs(N.z);',
+      '  vec2 uvV=axeX?vec2(-P.z*sx,P.y):vec2(P.x*sz,P.y);',
+      '  vec3 TV=axeX?vec3(0.0,0.0,-sx):vec3(sz,0.0,0.0);',
+      '  float raide=smoothstep(0.82,0.55,N.y);',
+      '  vec2 dHx=dFdx(uvH), dHy=dFdy(uvH), dVx=dFdx(uvV), dVy=dFdy(uvV);',
+      '  vec3 cols[4]; vec3 nors[4]; float wu[4]; float hm=-1.0;',
+      '  for(int k=0;k<4;k++){',
+      '    float w=0.0; bool dup=false;',
+      '    for(int j=0;j<4;j++){ if(ids[j]==ids[k]){ w+=ws[j]; if(j<k) dup=true; } }',
+      '    wu[k]=dup?0.0:w; cols[k]=vec3(0.0); nors[k]=N;',
+      '    if(wu[k]>0.002){ coucheSol(ids[k],uvH,uvV,dHx,dHy,dVx,dVy,TV,raide,N,cols[k],nors[k]);',
+      '      hm=max(hm,wu[k]+dot(cols[k],vec3(0.3,0.5,0.2))*0.6); }',
+      '  }',
+      /* mélange « par la hauteur » : les cailloux percent l'herbe, l'herbe pousse entre les pavés */
+      '  vec3 col=vec3(0.0), nrm=vec3(0.0), moy=vec3(0.0); float tot=0.0;',
+      '  for(int k=0;k<4;k++){ if(wu[k]<=0.002) continue;',
+      '    float b=max(wu[k]+dot(cols[k],vec3(0.3,0.5,0.2))*0.6-(hm-0.28),0.0);',
+      '    col+=cols[k]*b; nrm+=nors[k]*b; moy+=uMoySol[int(ids[k])]*b; tot+=b; }',
+      '  col/=max(tot,1e-4); nrm/=max(tot,1e-4); moy/=max(tot,1e-4);',
+      /* la neige coiffe les sommets, moins sur les parois raides */
+      '  float neige=smoothstep(4.5,5.4,P.y+(bruitS(pt*0.9)-0.5)*1.3)*(1.0-raide*0.55);',
+      '  if(neige>0.01){ vec3 cn,nn; coucheSol('+COUCHE_NEIGE.toFixed(1)+',uvH,uvV,dHx,dHy,dVx,dVy,TV,raide,N,cn,nn);',
+      '    col=mix(col,cn,neige); nrm=mix(nrm,nn,neige); moy=mix(moy,uMoySol['+COUCHE_NEIGE+'],neige); refC=mix(refC,vec3(0.95),neige); }',
+      /* la couleur du jeu (ombres des arbres, sol brûlé, saisons) module la photo sans l\'écraser */
+      '  vec3 rat=clamp(vColor/max(refC,vec3(0.03)),vec3(0.4),vec3(1.3)); rat=mix(vec3(dot(rat,vec3(0.333))),rat,0.5);',
+      '  vec3 teint=mix(col,col/max(moy,vec3(0.05))*refC,uTeinte);',
+      '  diffuseColor.rgb*=teint*rat*uGainSol;',
+      '  solNW=normalize(nrm);',
+      '} else {',
+      '#include <map_fragment>',
+      '}'
+    ].join('\n'))
+    .replace('#include <color_fragment>','if(uPret<0.5){\n#include <color_fragment>\n}')
+    .replace('#include <normal_fragment_maps>','#include <normal_fragment_maps>\nif(uPret>0.5) normal=normalize((viewMatrix*vec4(solNW,0.0)).xyz);');
+  };
+  matSol.customProgramCacheKey=function(){ return 'solHD'; };
+}
+/* une case → sa matière (A) et la couleur moyenne de son biome (RGB), pour que la
+   couleur du jeu puisse nuancer la photo */
+function majSplat(){
+  if(!SOL_HD) return;
+  const t=J.tuiles, coul=J.couleurTuile, ob=J.objets, som={};
+  for(let i=0;i<W*H;i++){
+    const tt=t[i]; let s=som[tt]; if(!s) s=som[tt]=[0,0,0,0];
+    const k=couleurCase(i,t,coul,ob); s[0]+=k[0]; s[1]+=k[1]; s[2]+=k[2]; s[3]++;
+  }
+  for(let i=0;i<W*H;i++){
+    const s=som[t[i]], o=i*4;
+    splatData[o]=Math.min(255,Math.round(s[0]/s[3]*255)); splatData[o+1]=Math.min(255,Math.round(s[1]/s[3]*255));
+    splatData[o+2]=Math.min(255,Math.round(s[2]/s[3]*255));
+    splatData[o+3]=COUCHE_DE[t[i]]!==undefined?COUCHE_DE[t[i]]:0;
+  }
+  texSplat.needsUpdate=true;
+}
 /* le grain est centré sur un gris moyen : on remonte la couleur pour garder la même clarté */
 const COMP=255/BASE_SOL*1.04;
 function uvCase(t,v,uv,o){
@@ -10068,6 +10215,7 @@ function construireSol(){
   else { terrain=new T3.Mesh(g,matSol); terrain.receiveShadow=true; scene.add(terrain); }
   lisserCouleurs(g.attributes.color.array);
   majTexProfondeur();
+  majSplat();
   refTuiles=t; copieT=Uint8Array.from(t); copieC=coul.slice(); copieO=Uint8Array.from(ob);
 }
 let copieO=null;
@@ -10145,6 +10293,13 @@ function majEau(X,Z,dt){
 }
 
 /* ---------- décor : modèles instanciés ---------- */
+/* normales lissées d'une géométrie à sommets séparés : on moyenne les faces qui partagent un point */
+function normalesLisses(g){
+  g.computeVertexNormals();
+  const p=g.attributes.position, n=g.attributes.normal, acc=new Map(), cle=function(i){ return Math.round(p.getX(i)*1e4)+","+Math.round(p.getY(i)*1e4)+","+Math.round(p.getZ(i)*1e4); };
+  for(let i=0;i<p.count;i++){ const k=cle(i); let a=acc.get(k); if(!a){ a=[0,0,0]; acc.set(k,a); } a[0]+=n.getX(i); a[1]+=n.getY(i); a[2]+=n.getZ(i); }
+  for(let i=0;i<p.count;i++){ const a=acc.get(cle(i)), l=Math.hypot(a[0],a[1],a[2])||1; n.setXYZ(i,a[0]/l,a[1]/l,a[2]/l); }
+}
 const GEO={
   box:new T3.BoxGeometry(1,1,1),
   cyl:new T3.CylinderGeometry(0.5,0.5,1,8),
@@ -10167,7 +10322,44 @@ const GEO={
     g.setAttribute('uv',new T3.Float32BufferAttribute(uv,2));
     g.computeVertexNormals(); return g;
   })(),
-  tronc:new T3.CylinderGeometry(0.36,0.5,1,7),
+  /* houppier : une boule bosselée, lisse, aux normales « duveteuses » (tournées vers
+     l'extérieur du feuillage) pour une lumière douce au lieu de facettes */
+  feuilles:(function(){
+    const g=new T3.IcosahedronGeometry(0.5,2), p=g.attributes.position, v=new T3.Vector3();
+    for(let i=0;i<p.count;i++){
+      v.fromBufferAttribute(p,i); const d=v.clone().normalize();
+      const b=1+0.11*Math.sin(d.x*7.1+d.y*3.3)*Math.sin(d.z*6.3-d.y*4.1)+0.06*Math.sin(d.x*13.7+d.z*11.9+d.y*5.0);
+      v.copy(d).multiplyScalar(0.5*b*(d.y<-0.3?0.92:1)); p.setXYZ(i,v.x,v.y,v.z);
+    }
+    normalesLisses(g);
+    const n=g.attributes.normal;
+    for(let i=0;i<p.count;i++){ v.fromBufferAttribute(p,i).normalize(); const nx=n.getX(i)*0.4+v.x*0.6, ny=n.getY(i)*0.4+v.y*0.6, nz=n.getZ(i)*0.4+v.z*0.6, l=Math.hypot(nx,ny,nz); n.setXYZ(i,nx/l,ny/l,nz/l); }
+    return g;
+  })(),
+  /* rocher : bloc arrondi aux arêtes usées, bosselé, plus large que haut */
+  rocher:(function(){
+    const g=new T3.IcosahedronGeometry(0.5,2), p=g.attributes.position, v=new T3.Vector3();
+    for(let i=0;i<p.count;i++){
+      v.fromBufferAttribute(p,i); const d=v.clone().normalize();
+      const pl=Math.max(Math.abs(d.x*1.1),Math.abs(d.y*1.35),Math.abs(d.z));          /* un peu taillé */
+      const b=0.5*(0.82+0.18/pl)+0.035*Math.sin(d.x*9.3+d.z*7.1)+0.025*Math.sin(d.y*15.0+d.x*11.0);
+      v.copy(d).multiplyScalar(b); if(v.y<-0.3) v.y=-0.3-(v.y+0.3)*0.3; p.setXYZ(i,v.x,v.y,v.z);
+    }
+    normalesLisses(g); return g;
+  })(),
+  /* étage de sapin : jupe de branches qui retombent en pointes */
+  sapin:(function(){
+    const g=new T3.ConeGeometry(0.5,1,20,2), p=g.attributes.position, v=new T3.Vector3();
+    for(let i=0;i<p.count;i++){
+      v.fromBufferAttribute(p,i); const r=Math.hypot(v.x,v.z); if(r<1e-4) continue;
+      const a=Math.atan2(v.z,v.x), bas=(0.5-v.y);            /* 0 au sommet, 1 en bas */
+      const pointe=Math.pow(Math.abs(Math.cos(a*5)),3);
+      const k=1+bas*(0.22*pointe-0.06)+0.04*Math.sin(a*13);
+      v.x*=k; v.z*=k; v.y-=bas*bas*0.16*pointe; p.setXYZ(i,v.x,v.y,v.z);
+    }
+    g.computeVertexNormals(); return g;
+  })(),
+  tronc:new T3.CylinderGeometry(0.36,0.5,1,10,2),
   brin:(function(){ const g=new T3.ConeGeometry(0.5,1,3); g.translate(0,0.5,0); return g; })()
 };
 /* textures du décor (gris, teintées par la couleur de chaque pièce) */
@@ -10252,6 +10444,35 @@ for(const k in PEINTRE_OBJ){
   t.wrapS=t.wrapT=T3.RepeatWrapping; t.anisotropy=Math.min(8,rend.capabilities.getMaxAnisotropy());
   TEX_OBJ[k]=t;
 }
+/* Les matières principales du décor prennent une vraie photo (Poly Haven, CC0), passée en
+   gris pour que la couleur de chaque pièce la teinte comme avant, et gagnent leur relief. */
+const PHOTO_OBJ={ecorce:'bark_brown_02',roche:'rocky_terrain_02',bois:'wood_planks',pierre:'castle_brick_07',
+  tuiles:'roof_tiles_14',pierreBase:'cobblestone_floor_01',neige:'snow_02'};
+const NOR_OBJ={};
+if(location.protocol!=='file:') Object.keys(PHOTO_OBJ).forEach(function(k){
+  const id=PHOTO_OBJ[k], S=window.matchMedia('(pointer: coarse)').matches?256:512;
+  const im=new Image();
+  im.onload=function(){
+    try{
+      const c=document.createElement('canvas'); c.width=c.height=S;
+      const g=c.getContext('2d',{willReadFrequently:true}); g.drawImage(im,0,0,S,S);
+      const d=g.getImageData(0,0,S,S), px=d.data; let m=0;
+      for(let i=0;i<px.length;i+=4) m+=px[i]*0.3+px[i+1]*0.5+px[i+2]*0.2;
+      m/=px.length/4;
+      const ctr={roche:2.0,pierre:1.8,pierreBase:1.7,tuiles:1.5,ecorce:1.4}[k]||1.25;
+      for(let i=0;i<px.length;i+=4){ const v=Math.max(0,Math.min(255,222+(px[i]*0.3+px[i+1]*0.5+px[i+2]*0.2-m)*ctr));
+        px[i]=px[i+1]=px[i+2]=v; }
+      g.putImageData(d,0,0);
+      TEX_OBJ[k].image=c; TEX_OBJ[k].needsUpdate=true;
+      const n=new T3.TextureLoader().load('assets/tex/'+id+'_nor.jpg',function(){
+        for(const ck in matDecorCache){ const m=matDecorCache[ck]; if(m.map===TEX_OBJ[k]&&!m.normalMap){ m.normalMap=n; m.normalScale.set(0.9,0.9); m.needsUpdate=true; } }
+      });
+      n.wrapS=n.wrapT=T3.RepeatWrapping; n.anisotropy=TEX_OBJ[k].anisotropy;
+      NOR_OBJ[k]=n;
+    }catch(e){}
+  };
+  im.src='assets/tex/'+id+'_diff.jpg';
+});
 /* le vent : un balancement lent, décalé selon la position de chaque plante */
 const uVent={value:0};
 function avecVent(m,force){
@@ -10275,6 +10496,8 @@ function matDecor(tex,emis,vent){
   if(emis){ m.emissive=new T3.Color(emis); m.emissiveIntensity=1; }
   /* fenêtres : seule la vitre s'allume, pas le cadre ; l'intensité suit la nuit */
   if(tex==='fenetre'){ m.emissiveMap=TEX_OBJ.fenetre; m.emissiveIntensity=0.1; fenetres.push(m); }
+  if(tex==='feuillage'||tex==='aiguilles'||tex==='neige'||tex==='ecorce'||tex==='bouleau'||tex==='roche') m.flatShading=false;
+  if(tex&&NOR_OBJ[tex]&&NOR_OBJ[tex].image){ m.normalMap=NOR_OBJ[tex]; m.normalScale.set(0.9,0.9); }
   if(vent) avecVent(m,vent);
   avecDecoupe(m,vent||0);
   return matDecorCache[k]=m;
@@ -10734,6 +10957,17 @@ function texPiece(nom,k,p){
   if(estBrun(c)) return 'bois';
   return null;
 }
+/* quelle forme pour quelle pièce : feuillages arrondis, sapins à branches, rochers lissés */
+function geoPiece(nom,k,p){
+  const g=p[0], t=texPiece(nom,k,p);
+  if(ARBRES[nom]&&(t==='feuillage'||t==='aiguilles'||t==='neige')){
+    if(g==='cone') return 'sapin';
+    if(g==='sph0'||g==='sph') return 'feuilles';
+  }
+  if(PLANTES[nom]&&t==='feuillage'&&(g==='sph0'||g==='sph')) return 'feuilles';
+  if(g==='roc'&&t==='roche') return 'rocher';
+  return g;
+}
 /* force du vent par pièce : feuillages et herbes ondulent, troncs et pierres non */
 function ventPiece(nom,k,p){
   if((nom==='banniere'||nom==='mat'||nom==='tour')&&p[6]==='tissu') return 0.07;
@@ -10768,7 +11002,8 @@ function fusionnerPieces(nom,liste){
   const P=[],N=[],U=[],C=[],V=[];
   liste.forEach(function(it){
     const p=it.p, k=it.k;
-    let g=GEO[p[0]]; g=g.index?g.toNonIndexed():g;
+    const feuil=geoPiece(nom,k,p)==='feuilles'||geoPiece(nom,k,p)==='sapin';
+    let g=GEO[geoPiece(nom,k,p)]; g=g.index?g.toNonIndexed():g;
     const q0=qPart[nom][k]||((COUCHE[nom]&&COUCHE[nom][k])?qc:null);
     qF.set(0,0,0,1); if(q0) qF.copy(q0);
     m4F.compose(vF3.set(p[2][0],p[2][1],p[2][2]),qF,sF.set(p[3][0],p[3][1],p[3][2]));
@@ -10780,7 +11015,9 @@ function fusionnerPieces(nom,liste){
       vF3.applyMatrix4(m4F); P.push(vF3.x,vF3.y,vF3.z);
       if(nor){ vF3.fromBufferAttribute(nor,i).applyMatrix3(m3F).normalize(); N.push(vF3.x,vF3.y,vF3.z); } else N.push(0,1,0);
       if(uv) U.push(uv.getX(i),uv.getY(i)); else U.push(0,0);
-      C.push(col.r,col.g,col.b);
+      /* le dessous et le cœur du feuillage restent dans l'ombre */
+      if(feuil){ const ao=0.62+0.38*Math.min(1,Math.max(0,yLoc+0.5)); C.push(col.r*ao,col.g*ao,col.b*ao); }
+      else C.push(col.r,col.g,col.b);
       V.push(Math.max(0,yLoc+0.5));   /* hauteur dans la pièce : sert au balancement du vent */
     }
   });
@@ -12259,7 +12496,7 @@ function modeleMesh(nom,i){
     m2.vertexColors=false;
     m2.color.copy(im.base); if(im.mat.map) m2.color.multiplyScalar(1.1);
     mats.push(m2);
-    const me=new T3.Mesh(GEO[p[0]],m2);
+    const me=new T3.Mesh(GEO[geoPiece(nom,k,p)],m2);
     me.position.set(p[2][0],p[2][1],p[2][2]); me.scale.set(p[3][0],p[3][1],p[3][2]);
     if(qPart[nom][k]) me.quaternion.copy(qPart[nom][k]); else if(COUCHE[nom]&&COUCHE[nom][k]) me.quaternion.copy(qc);
     me.castShadow=true; g.add(me);
@@ -12951,14 +13188,22 @@ eau.material.needsUpdate=true;
 
 /* --- le ciel : dégradé du zénith à l'horizon, disque du soleil, étoiles la nuit --- */
 const uCiel={uZenith:{value:new T3.Color(0x4f86c6)},uHorizon:{value:new T3.Color(0xb8d0dc)},uSoleil:{value:new T3.Vector3(0,1,0)},
-  uCoulSoleil:{value:new T3.Color(0xfff2d8)},uNuit:{value:0}};
+  uCoulSoleil:{value:new T3.Color(0xfff2d8)},uNuit:{value:0},uHDR:{value:null},uHDRok:{value:0},uDerive:{value:0}};
 const ciel=new T3.Mesh(new T3.SphereGeometry(95,32,16),new T3.ShaderMaterial({
   uniforms:uCiel, side:T3.BackSide, depthWrite:false, fog:false,
   vertexShader:'varying vec3 vDir; void main(){ vDir=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }',
   fragmentShader:'uniform vec3 uZenith; uniform vec3 uHorizon; uniform vec3 uSoleil; uniform vec3 uCoulSoleil; uniform float uNuit; varying vec3 vDir;\n'+
+    'uniform sampler2D uHDR; uniform float uHDRok; uniform float uDerive;\n'+
     'float h(vec3 p){ return fract(sin(dot(p,vec3(12.9898,78.233,45.164)))*43758.5453); }\n'+
     'void main(){ vec3 d=normalize(vDir); float y=max(d.y,0.0);\n'+
     ' vec3 c=mix(uHorizon,uZenith,pow(y,0.55));\n'+
+    /* vrai ciel photographié : ses nuages dérivent lentement et prennent la couleur de l'heure */
+    ' if(uHDRok>0.5){ vec2 uv=vec2(atan(d.z,d.x)/6.2832+0.5+uDerive,asin(clamp(d.y,-1.0,1.0))/3.1416+0.5);\n'+
+    '   vec3 hd=texture2D(uHDR,uv).rgb; hd=min(hd,vec3(6.0)); hd=pow(hd/(1.0+hd),vec3(0.4545));\n'+
+    '   float lum=dot(hd,vec3(0.3,0.55,0.15)), nuage=smoothstep(0.42,0.85,lum-max(hd.b-hd.r,0.0)*0.8);\n'+
+    '   vec3 teinte=mix(vec3(1.0),uCoulSoleil,0.45)*mix(1.0,0.12,uNuit);\n'+
+    '   vec3 cielPhoto=mix(c,hd*teinte*1.05,0.55);\n'+
+    '   c=mix(c,mix(cielPhoto,mix(c,vec3(lum)*teinte,0.85),nuage),smoothstep(-0.02,0.12,d.y)); }\n'+
     ' float s=max(dot(d,normalize(uSoleil)),0.0);\n'+
     ' c+=uCoulSoleil*(pow(s,600.0)*2.5+pow(s,12.0)*0.25)*(1.0-uNuit);\n'+
     ' vec3 q=floor(d*180.0); float e=step(0.9975,h(q))*smoothstep(0.05,0.3,y);\n'+
@@ -12966,6 +13211,24 @@ const ciel=new T3.Mesh(new T3.SphereGeometry(95,32,16),new T3.ShaderMaterial({
     ' gl_FragColor=vec4(c,1.0); }'
 }));
 ciel.renderOrder=-10; ciel.frustumCulled=false; scene.add(ciel);
+/* Le même ciel (Poly Haven, CC0) éclaire la scène : lumière ambiante qui vient de partout
+   et reflets doux. On prépare quelques niveaux d'intensité pour suivre le jour et la nuit
+   sans recompiler les matériaux. */
+let envNiveaux=null;
+const NIV_ENV=[1,0.7,0.45,0.27,0.14,0.05];
+if(T3.RGBELoader&&location.protocol!=='file:'){
+  new T3.RGBELoader().setDataType(T3.HalfFloatType).load('assets/ciel/ciel_1k.hdr',function(tex){
+    try{
+      tex.wrapS=T3.RepeatWrapping; tex.magFilter=tex.minFilter=T3.LinearFilter; tex.generateMipmaps=false;
+      uCiel.uHDR.value=tex; uCiel.uHDRok.value=1;
+      const pm=new T3.PMREMGenerator(rend), sc=new T3.Scene();
+      const boule=new T3.Mesh(new T3.SphereGeometry(40,48,24),new T3.MeshBasicMaterial({map:tex,side:T3.BackSide,toneMapped:false}));
+      sc.add(boule);
+      envNiveaux=NIV_ENV.map(function(k){ boule.material.color.setScalar(k*0.6); return pm.fromScene(sc,0,0.1,100).texture; });
+      boule.geometry.dispose(); boule.material.dispose(); pm.dispose();
+    }catch(e){ envNiveaux=null; }
+  });
+}
 const zJour=new T3.Color(0x4f86c6), zNuit=new T3.Color(0x03060e), zCreps=new T3.Color(0x6a5a8a);
 function majCiel(nn,creps,grotte){
   ciel.position.copy(cam.position);
@@ -13139,6 +13402,13 @@ function rendre(dt){
     hemi.intensity+=(Math.max(hemi.intensity*0.8,0.45)-hemi.intensity)*grotteK;
   }
   hemi.color.copy(tmpH); hemi.groundColor.copy(tmpB);
+  if(envNiveaux){
+    const jourE=(1-nn)*(1-0.45*grotteK)*(1-0.4*meteo.mouille);
+    let best=0; for(let k=1;k<NIV_ENV.length;k++) if(Math.abs(NIV_ENV[k]-jourE)<Math.abs(NIV_ENV[best]-jourE)) best=k;
+    scene.environment=envNiveaux[best];
+    hemi.intensity*=1-0.45*(1-nn);          /* le ciel éclaire déjà : on baisse la lampe d'appoint */
+  }
+  uCiel.uDerive.value=(uCiel.uDerive.value+(dt||0.016)*0.0015)%1;
   /* brouillard : couleur du moment, teintée par l'air du biome où l'on se tient */
   fond.copy(ciJour).lerp(ciNuit,nn).lerp(ciCreps,creps*0.5);
   const bio=J.tuiles[(Z|0)*W+(X|0)], air=AIR[bio];
@@ -13364,7 +13634,7 @@ if(ast) ast.insertAdjacentHTML('beforeend','<br><kbd>V</kbd> vue 2D/3D · <kbd>m
 vue.meteo=meteo;
 vue.evenement=function(n,d){ if(n==='impact'||n==='engin'||n==='tirDefense') evSiege(n,d); else evenement(n,d); };
 /* outils de mesure (tests) */
-vue.debug={rend:rend,scene:scene,soleil:soleil,qualite:function(q){ appliquerQualite(q); },composer:function(on){ if(!on) composer=null; else creerComposer(); },decor:function(){ const t0=performance.now(); construireDecor(); return performance.now()-t0; }};
+vue.debug={sol:uSol,cam:cam,rend:rend,scene:scene,soleil:soleil,qualite:function(q){ appliquerQualite(q); },composer:function(on){ if(!on) composer=null; else creerComposer(); },decor:function(){ const t0=performance.now(); construireDecor(); return performance.now()-t0; }};
 /* réglages de caméra accessibles (tests, captures) */
 vue.camera=function(d,inclinaison,tour){ if(d!=null) distCible=d; if(inclinaison!=null) tangCible=inclinaison; if(tour!=null) yawCible=tour; };   /* pour forcer un temps en test : __vue3d.meteo.type='orage' */
 window.__vue3d=vue; appliquer();
