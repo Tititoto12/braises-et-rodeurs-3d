@@ -11185,6 +11185,12 @@ function construireDecor(){
 /* textures des personnages : grises, teintées par la couleur de chaque habit */
 const PEINTRE_PERSO={
   uni:function(g,n,r){ grain(g,n,r,300,225,255,1,2); },
+  /* peau : teint légèrement marbré, pores très fins, rien qui fasse « pixel » */
+  peau:function(g,n,r){
+    for(let k=0;k<40;k++){ const x=r()*n,y=r()*n,rr=6+r()*14, v=r()<0.5?246:226;
+      enBoucle(n,x,y,rr,function(X,Y){ const gr=g.createRadialGradient(X,Y,0,X,Y,rr); gr.addColorStop(0,gris(v,0.35)); gr.addColorStop(1,gris(v,0));
+        g.fillStyle=gr; g.fillRect(X-rr,Y-rr,rr*2,rr*2); }); }
+    for(let k=0;k<500;k++){ g.fillStyle=gris(r()<0.5?222:250,0.35); g.fillRect(r()*n,r()*n,0.8,0.8); } },
   tunique:function(g,n,r){
     for(let k=0;k<n;k+=2){ g.fillStyle=gris(232+((k/2)%2)*16,0.5); g.fillRect(0,k,n,1); g.fillRect(k,0,1,n); }
     /* col, couture du milieu et boutons sur le haut de la face */
@@ -11251,6 +11257,60 @@ const G2={
     const g=new T3.LatheGeometry(p,SEGF+4); g.scale(1,1,0.72); g.computeVertexNormals(); return g; })(),
   arc:(function(){ const g=new T3.TorusGeometry(0.3,0.014,6,18,Math.PI); g.rotateZ(-Math.PI/2); g.rotateY(Math.PI/2); return g; })()
 };
+/* ---- anatomie sculptée ----
+   Membres : profils de muscles (épaule, biceps, avant-bras, cuisse, mollet) tournés autour
+   de l'axe, en taille unité (hauteur 1, rayon max 0,5) pour garder les échelles des poses. */
+function membre(profil,aplat){
+  const pts=[new T3.Vector2(0,-0.5)];
+  profil.slice().reverse().forEach(function(a){ pts.push(new T3.Vector2(a[1],a[0])); });
+  pts.push(new T3.Vector2(0,0.5));
+  const g=new T3.LatheGeometry(pts,SEGF+2); if(aplat) g.scale(1,1,aplat); g.computeVertexNormals(); return g;
+}
+G2.brasHaut=membre([[0.5,0.3],[0.46,0.47],[0.3,0.5],[0.05,0.49],[-0.2,0.44],[-0.42,0.37],[-0.5,0.33]],0.9);
+G2.avantBras=membre([[0.5,0.36],[0.4,0.45],[0.2,0.5],[-0.1,0.4],[-0.38,0.31],[-0.5,0.3]],0.82);
+G2.cuisse=membre([[0.5,0.38],[0.44,0.5],[0.2,0.49],[-0.1,0.43],[-0.38,0.36],[-0.5,0.33]],0.92);
+G2.mollet=membre([[0.5,0.42],[0.32,0.5],[0.12,0.47],[-0.2,0.37],[-0.42,0.34],[-0.5,0.36]],0.9);
+/* tête : une sphère sculptée — mâchoire qui s'affine, menton, pommettes, arcade
+   sourcilière, orbites creusées, crâne plus long vers l'arrière */
+G2.tete=(function(){
+  const g=new T3.SphereGeometry(0.5,24,18), p=g.attributes.position;
+  const lis=function(a,b,x){ const t=Math.max(0,Math.min(1,(x-a)/(b-a))); return t*t*(3-2*t); };
+  for(let i=0;i<p.count;i++){
+    let x=p.getX(i), y=p.getY(i), z=p.getZ(i);
+    const nx=x/0.5, ny=y/0.5, nz=z/0.5;
+    const bas=lis(0.15,-0.95,ny);                      /* 0 en haut, 1 au menton */
+    x*=1-0.34*bas*bas; x*=0.95;
+    if(nz>0){ z*=1-0.1*bas; z+=0.035*bas*lis(0.2,0.9,nz)*(1-Math.abs(nx)); }   /* menton en avant */
+    if(nz<0) z*=1.08+0.04*lis(-0.2,0.6,ny);           /* occiput */
+    /* arcade sourcilière */
+    z+=0.022*lis(0.6,0.95,nz)*Math.exp(-Math.pow((ny-0.36)/0.12,2));
+    [-1,1].forEach(function(s){
+      /* orbites */
+      const de=Math.hypot(nx-s*0.39,(ny-0.21)*1.3);
+      if(nz>0.45&&de<0.3){ const k=Math.pow(1-de/0.3,2)*lis(0.45,0.8,nz); z-=0.045*k; }
+      /* pommettes */
+      const dp=Math.hypot(nx-s*0.52,(ny+0.04)*1.2);
+      if(nz>0.3&&dp<0.35){ const k=Math.pow(1-dp/0.35,2); x+=s*0.018*k; z+=0.012*k; }
+    });
+    p.setXYZ(i,x,y,z);
+  }
+  g.computeVertexNormals(); return g;
+})();
+/* torse : poitrine bombée, omoplates, taille marquée */
+(function(){
+  const p=G2.torse.attributes.position;
+  for(let i=0;i<p.count;i++){
+    const x=p.getX(i), y=p.getY(i); let z=p.getZ(i);
+    const pec=Math.exp(-Math.pow((y-0.25)/0.06,2)), omo=Math.exp(-Math.pow((y-0.27)/0.07,2)), taille=Math.exp(-Math.pow((y-0.11)/0.06,2));
+    if(z>0) z*=1+0.16*pec*(1-Math.abs(x)/0.16*0.5); else z*=1+0.08*omo;
+    p.setXYZ(i,x*(1-0.06*taille),y,z*(1-0.04*taille));
+  }
+  G2.torse.computeVertexNormals();
+})();
+/* main : paume, doigts serrés et pouce */
+G2.paume=(function(){ const g=new T3.SphereGeometry(0.5,14,10); const p=g.attributes.position;
+  for(let i=0;i<p.count;i++){ const y=p.getY(i); if(y<0) p.setY(i,y*1.25); }   /* doigts plus longs que le talon */
+  g.computeVertexNormals(); return g; })();
 function mStd(){ return new T3.MeshStandardMaterial({color:0x777777,map:TEX_P.uni,roughness:0.8,metalness:0}); }
 const matBlancOeil=new T3.MeshStandardMaterial({color:0xf2eee6,roughness:0.3});
 const matLevres=new T3.MeshStandardMaterial({color:0x8a4a40,roughness:0.6});
@@ -11358,7 +11418,7 @@ function creerHumain(){
   const g=new T3.Group(); g.rotation.order='YXZ';
   const M={corps:mStd(),jambes:mStd(),peau:mStd(),chef:mStd(),bottes:mStd(),
     yeux:new T3.MeshBasicMaterial({color:0x2a1e18}),flamme:new T3.MeshBasicMaterial({color:0xffb040})};
-  M.bottes.color.set('#3a2a1e'); M.bottes.map=TEX_P.cuir; M.peau.roughness=0.65;
+  M.bottes.color.set('#3a2a1e'); M.bottes.map=TEX_P.cuir; M.peau.roughness=0.58; M.peau.map=TEX_P.peau;
   const u={M:M,kind:'humain'};
   const haut=piv(0,0.56,0,g); u.haut=haut;
   u.torse=me(G2.torse,M.corps,0,0,0,1,1,1,haut);
@@ -11369,19 +11429,27 @@ function creerHumain(){
   u.sac=me(G2.sph,matSacDos,0,0.2,-0.11,0.2,0.26,0.11,haut);
   /* tête */
   const tete=piv(0,0.415,0,haut); u.tete=tete;
-  u.crane=me(G2.sph,M.peau,0,0.09,0,0.19,0.215,0.2,tete);
-  u.machoire=me(G2.sph,M.peau,0,0.045,0.02,0.15,0.11,0.15,tete);
-  u.nez=me(G2.cone,M.peau,0,0.085,0.1,0.028,0.05,0.03,tete); u.nez.rotation.x=1.35;
-  u.oreG=me(G2.sph,M.peau,-0.095,0.09,-0.005,0.03,0.052,0.035,tete);
-  u.oreD=me(G2.sph,M.peau,0.095,0.09,-0.005,0.03,0.052,0.035,tete);
-  u.blancG=me(G2.sph,matBlancOeil,-0.037,0.11,0.082,0.034,0.026,0.02,tete);
-  u.blancD=me(G2.sph,matBlancOeil,0.037,0.11,0.082,0.034,0.026,0.02,tete);
-  u.oeilG=me(G2.sph,M.yeux,-0.037,0.11,0.091,0.017,0.018,0.01,tete);
-  u.oeilD=me(G2.sph,M.yeux,0.037,0.11,0.091,0.017,0.018,0.01,tete);
-  u.sourcilG=me(GEO.box,M.chef,-0.038,0.135,0.09,0.042,0.009,0.01,tete);
-  u.sourcilD=me(GEO.box,M.chef,0.038,0.135,0.09,0.042,0.009,0.01,tete);
-  u.bouche=me(GEO.box,matLevres,0,0.048,0.093,0.04,0.008,0.01,tete);
-  u.chef=me(G2.demi,M.chef,0,0.112,-0.012,0.212,0.23,0.222,tete);
+  /* tête d'adulte : un septième de la hauteur environ, visage sculpté d'une pièce */
+  tete.scale.setScalar(0.86);
+  u.crane=me(G2.tete,M.peau,0,0.083,-0.004,0.19,0.238,0.208,tete);
+  u.nez=me(G2.cone,M.peau,0,0.09,0.1,0.024,0.058,0.026,tete); u.nez.rotation.x=1.25;
+  u.nezBout=me(G2.sph,M.peau,0,0.068,0.108,0.024,0.022,0.022,tete);
+  u.narines=me(G2.sph,M.peau,0,0.063,0.1,0.04,0.017,0.024,tete);
+  u.levreB=me(G2.sph,M.peau,0,0.038,0.094,0.036,0.014,0.02,tete);
+  u.oreG=me(G2.sph,M.peau,-0.094,0.09,-0.008,0.022,0.05,0.034,tete);
+  u.oreD=me(G2.sph,M.peau,0.094,0.09,-0.008,0.022,0.05,0.034,tete);
+  u.blancG=me(G2.sph,matBlancOeil,-0.037,0.11,0.086,0.032,0.022,0.02,tete);
+  u.blancD=me(G2.sph,matBlancOeil,0.037,0.11,0.086,0.032,0.022,0.02,tete);
+  u.oeilG=me(G2.sph,M.yeux,-0.037,0.11,0.095,0.016,0.017,0.01,tete);
+  u.oeilD=me(G2.sph,M.yeux,0.037,0.11,0.095,0.016,0.017,0.01,tete);
+  /* paupières : un petit bourrelet de peau au-dessus de l'œil */
+  u.paupG=me(G2.demi,M.peau,-0.037,0.112,0.084,0.036,0.016,0.024,tete);
+  u.paupD=me(G2.demi,M.peau,0.037,0.112,0.084,0.036,0.016,0.024,tete);
+  u.sourcilG=me(GEO.box,M.chef,-0.038,0.134,0.094,0.042,0.008,0.01,tete); u.sourcilG.rotation.z=0.12;
+  u.sourcilD=me(GEO.box,M.chef,0.038,0.134,0.094,0.042,0.008,0.01,tete); u.sourcilD.rotation.z=-0.12;
+  u.bouche=me(GEO.box,matLevres,0,0.047,0.097,0.036,0.007,0.01,tete);
+  /* chevelure basculée vers l'arrière : dégage le front, descend sur la nuque */
+  u.chef=me(G2.demi,M.chef,0,0.118,-0.022,0.21,0.23,0.226,tete); u.chef.rotation.x=-0.42;
   u.nuque=me(G2.sph,M.chef,0,0.075,-0.055,0.19,0.17,0.11,tete);
   u.barbe=me(G2.sph,M.chef,0,0.035,0.05,0.135,0.1,0.09,tete);
   u.capuche=me(G2.capuche,M.chef,0,0.08,-0.022,0.255,0.285,0.265,tete);
@@ -11393,11 +11461,14 @@ function creerHumain(){
   /* bras : épaule → coude → main */
   [-1,1].forEach(function(c){
     const b=piv(c*0.165,0.31,0,haut);
-    me(G2.sph,M.corps,0,0,0,0.1,0.1,0.1,b);
-    b.userData.haut=me(G2.conique,M.corps,0,-0.115,0,0.085,0.23,0.085,b);
+    me(G2.sph,M.corps,-c*0.012,-0.005,0,0.088,0.082,0.082,b);   /* épaule fondue dans le torse */
+    b.userData.haut=me(G2.brasHaut,M.corps,0,-0.115,0,0.085,0.23,0.085,b);
     const coude=piv(0,-0.235,0,b);
-    b.userData.bas=me(G2.conique,M.peau,0,-0.1,0,0.068,0.2,0.068,coude);
-    b.userData.main=me(G2.sph,M.peau,0,-0.215,0.005,0.058,0.07,0.05,coude);
+    /* manches longues jusqu'au poignet, avec un revers : plus de bras de mannequin */
+    b.userData.bas=me(G2.avantBras,M.corps,0,-0.1,0,0.07,0.21,0.07,coude);
+    me(G2.cyl,M.bottes,0,-0.195,0,0.056,0.022,0.05,coude).castShadow=false;
+    b.userData.main=me(G2.paume,M.peau,0,-0.222,0.006,0.052,0.07,0.034,coude);
+    const pouce=me(G2.sph,M.peau,-c*0.024,-0.21,0.022,0.019,0.042,0.019,coude); pouce.rotation.set(0.4,0,c*0.5);
     b.userData.coude=coude;
     if(c<0) u.brasG=b; else u.brasD=b;
   });
@@ -11410,9 +11481,9 @@ function creerHumain(){
   /* jambes : hanche → genou → pied */
   [-1,1].forEach(function(c){
     const j=piv(c*0.075,0.56,0,g);
-    j.userData.haut=me(G2.conique,M.jambes,0,-0.135,0,0.1,0.28,0.1,j);
+    j.userData.haut=me(G2.cuisse,M.jambes,0,-0.135,0,0.1,0.28,0.1,j);
     const genou=piv(0,-0.27,0,j);
-    j.userData.bas=me(G2.conique,M.bottes,0,-0.12,0,0.085,0.25,0.085,genou);
+    j.userData.bas=me(G2.mollet,M.bottes,0,-0.12,0,0.097,0.25,0.097,genou);
     j.userData.pied=me(G2.sph,M.bottes,0,-0.255,0.035,0.078,0.058,0.15,genou);
     j.userData.genou=genou;
     if(c<0) u.jambeG=j; else u.jambeD=j;
@@ -11639,8 +11710,8 @@ function animerHumain(u,f,look,o,ph,v,T){
   u.torse.scale.set(c,1,c); u.jupe.scale.set(c,1,c); u.ceinture.scale.set(0.25*c,0.035,0.18*c);
   u.brasG.position.x=-0.165*c; u.brasD.position.x=0.165*c;
   u.jambeG.position.x=-0.075*c; u.jambeD.position.x=0.075*c;
-  [u.brasG,u.brasD].forEach(function(b){ b.userData.haut.scale.set(0.085*c,0.23,0.085*c); });
-  [u.jambeG,u.jambeD].forEach(function(j){ j.userData.haut.scale.set(0.1*c,0.28,0.1*c); });
+  [u.brasG,u.brasD].forEach(function(b){ b.userData.haut.scale.set(0.09*c,0.23,0.09*c); });
+  [u.jambeG,u.jambeD].forEach(function(j){ j.userData.haut.scale.set(0.118*c,0.28,0.118*c); });
   const co=look.coiffe||'cheveux';
   vis(u.chef,co==='cheveux'); vis(u.nuque,co==='cheveux'||co==='casque');
   vis(u.capuche,co==='capuche'); vis(u.pointe,co==='capuche');
